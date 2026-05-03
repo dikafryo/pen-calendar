@@ -1,0 +1,431 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8">
+
+  <!-- 보안 정책: 외부 스크립트/스타일/이미지 차단. CSP가 너무 빡빡하면 외부 폰트도 못 씀. -->
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; style-src 'self' 'unsafe-inline'; script-src 'self'; img-src 'self' data:;">
+
+  <title>neisme Calendar</title>
+
+  <!-- 같은 폴더의 styles.css 로드 -->
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+
+<!-- ╔════════════════════════════════════════════════════════════════════╗
+     ║  메인 위젯 컨테이너                                                  ║
+     ║  - 화면 전체를 차지하는 반투명 캘린더 박스                            ║
+     ║  - 안에는 [타이틀바] + [월 네비게이션] + [캘린더 그리드]              ║
+     ║    + [메모 패널] + [설정 패널] 이 들어있음                           ║
+     ╚════════════════════════════════════════════════════════════════════╝ -->
+<div class="widget" id="widget">
+
+  <!-- ┌─────────────────────────────────────────────────────────────────┐
+       │  ① 타이틀바 (창 맨 위 회색 영역)                                  │
+       │  - 📅 아이콘, "neisme Calendar" 글자, 버전, 자물쇠, ⚙ 설정버튼     │
+       │  - 잠금 해제 상태에서는 이 영역을 드래그해서 창 이동 가능           │
+       └─────────────────────────────────────────────────────────────────┘ -->
+  <div class="titlebar" id="titlebar">
+    <div class="titlebar-title">
+      <!-- 📅 아이콘: 클릭하면 neis.me 홈페이지 열림 -->
+      <span class="brand-icon" id="brandLink" title="neis.me 홈페이지 열기">📅</span>
+      <span>neisme Calendar</span>
+      <!-- 버전 표시 (자동으로 v26.5.4 같이 채워짐) -->
+      <span class="version-badge" id="versionLabel"></span>
+      <!-- 🔒/🔓 자물쇠 표시 -->
+      <span class="lock-indicator" id="lockIndicator">🔒</span>
+    </div>
+    <div class="titlebar-buttons">
+      <!-- ⚙ 설정 버튼 → 설정 패널 열기/닫기 -->
+      <button class="tb-btn" id="settingsBtn" title="설정">⚙</button>
+    </div>
+  </div>
+
+  <!-- ┌─────────────────────────────────────────────────────────────────┐
+       │  ② 월 네비게이션 (타이틀바 바로 아래)                              │
+       │  - 좌측: "2026년 5월 · 오늘 5.2 (토)"                            │
+       │  - 중앙: 이전달 / 이전주 / 오늘 / 다음주 / 다음달 버튼              │
+       └─────────────────────────────────────────────────────────────────┘ -->
+  <div class="month-nav">
+    <div class="month-title">
+      <span class="year" id="yearLabel">2026</span>
+      <span class="month" id="monthLabel">5월</span>
+      <span class="today-info" id="todayInfo"></span>
+    </div>
+    <div class="nav-btns">
+      <button class="nav-btn nav-btn-double" id="prevMonth" title="이전 달">◀◀</button>
+      <button class="nav-btn" id="prevWeek" title="이전 주">◀</button>
+      <button class="nav-btn nav-btn-today" id="todayBtn" title="오늘로 이동">오늘</button>
+      <button class="nav-btn" id="nextWeek" title="다음 주">▶</button>
+      <button class="nav-btn nav-btn-double" id="nextMonth" title="다음 달">▶▶</button>
+    </div>
+  </div>
+
+  <!-- ┌─────────────────────────────────────────────────────────────────┐
+       │  ③ 캘린더 그리드 (5주치 날짜)                                     │
+       │  - 위에는 요일 헤더 (월화수목금토일), 아래는 날짜 셀들              │
+       │  - 셀의 실제 내용은 app.js의 renderCalendar()가 동적으로 채움       │
+       └─────────────────────────────────────────────────────────────────┘ -->
+  <div class="calendar">
+    <div class="weekdays" id="weekdays"></div>   <!-- 요일 헤더 -->
+    <div class="days" id="daysGrid"></div>        <!-- 날짜 셀들 -->
+  </div>
+
+  <!-- ┌─────────────────────────────────────────────────────────────────┐
+       │  ④ 메모 / 할 일 패널 (캘린더 아래 노란색 박스)                     │
+       │  - 헤더: "📝 메모/할 일" + [전체/진행중/Tasks] 탭                  │
+       │  - 리스트: 체크박스가 달린 메모 항목들                             │
+       │  - 입력창: 새 메모 추가 (Enter로 저장)                            │
+       └─────────────────────────────────────────────────────────────────┘ -->
+  <div class="memo-panel">
+    <div class="memo-header">
+      <div class="memo-title">📝 메모 / 할 일</div>
+      <div class="memo-tabs">
+        <button class="memo-tab active" data-tab="all">전체</button>
+        <button class="memo-tab" data-tab="active">진행중</button>
+        <button class="memo-tab" data-tab="gtasks">Tasks</button>
+      </div>
+    </div>
+    <div class="memo-list" id="memoList"></div>     <!-- app.js가 채움 -->
+    <div class="memo-add-form">
+      <input type="text" class="memo-add-input" id="memoInput" placeholder="새 항목 추가 (Enter로 저장)">
+    </div>
+  </div>
+
+  <!-- ╔══════════════════════════════════════════════════════════════════╗
+       ║  ⑤ 설정 패널                                                       ║
+       ║                                                                    ║
+       ║  ⚙ 톱니바퀴 버튼을 누르면 우상단에 떠오르는 박스.                    ║
+       ║  - 레이아웃 (균일/가로압축/세로분할)                                 ║
+       ║  - 표시 (투명도, 폰트크기)                                          ║
+       ║  - 동기화 (잠금, 항상 위, 계정 연결: Google / NextCloud)            ║
+       ║                                                                    ║
+       ║  ★★★ NextCloud 연동에서 수정한 곳: 이 패널 안의 "NextCloud" 행 ★★★  ║
+       ║       (아래 settings-account 두 번째 항목)                          ║
+       ╚══════════════════════════════════════════════════════════════════╝ -->
+  <div class="settings-panel" id="settingsPanel">
+
+    <!-- ── 레이아웃 카드 3종 ── -->
+    <h4>📐 레이아웃</h4>
+    <div class="layout-options">
+      <div class="layout-card" data-layout="uniform">
+        <div class="layout-preview uniform">
+          <span class="weekend"></span><span></span><span></span><span></span><span></span><span></span><span class="weekend"></span>
+        </div>
+        <div class="layout-card-name">균일</div>
+      </div>
+      <div class="layout-card" data-layout="emphasis">
+        <div class="layout-preview emphasis">
+          <span></span><span></span><span></span><span></span><span></span><span class="weekend"></span><span class="weekend"></span>
+        </div>
+        <div class="layout-card-name">가로 압축</div>
+      </div>
+      <div class="layout-card active" data-layout="split">
+        <div class="layout-preview split">
+          <span></span><span></span><span></span><span></span><span></span><span class="weekend"></span><span class="weekend"></span>
+        </div>
+        <div class="layout-card-name">세로 분할</div>
+      </div>
+    </div>
+
+    <div class="settings-divider"></div>
+
+    <!-- ── 표시 (투명도/폰트) ── -->
+    <h4>🎨 표시</h4>
+    <div class="settings-row">
+      <span>투명도</span>
+      <input type="range" id="opacitySlider" min="20" max="100" value="88">
+      <span class="settings-value" id="opacityValue">88%</span>
+    </div>
+    <div class="settings-row">
+      <span>폰트 크기</span>
+      <input type="range" id="fontSlider" min="9" max="18" step="0.5" value="10">
+      <span class="settings-value" id="fontValue">10pt</span>
+    </div>
+
+    <div class="settings-divider"></div>
+
+    <!-- ── 동기화 섹션 헤더 (클릭하면 즉시 동기화) ── -->
+    <h4 id="syncHeader" class="clickable-header" title="클릭하여 지금 동기화">🔄 동기화</h4>
+
+    <!-- 창 잠금 토글 -->
+    <div class="settings-row">
+      <span>창 잠금</span>
+      <input type="checkbox" id="lockToggle" checked>
+    </div>
+
+    <!-- 항상 위에 표시 토글 -->
+    <div class="settings-row">
+      <span>항상 위에 표시</span>
+      <input type="checkbox" id="alwaysOnTopToggle" checked>
+    </div>
+
+    <!-- ── Google 계정 연결 행 ── -->
+    <div class="settings-row settings-account">
+      <div class="account-info">
+        <span class="account-name">Google Calendar / Tasks</span>
+        <span class="account-email disconnected" id="googleEmail">미연결</span>
+      </div>
+      <div class="account-controls">
+        <button class="account-btn" id="googleAuthBtn">연결</button>
+      </div>
+    </div>
+
+    <!-- ╔══════════════════════════════════════════════════════════════╗
+         ║  ★ NextCloud 계정 연결 행 (수정됨)                             ║
+         ║                                                                ║
+         ║  [변경 전] account-name에 disabled 클래스, 버튼 disabled,      ║
+         ║            "v2 예정", "개발 중"                                ║
+         ║  [변경 후] 정상 활성화. 클릭 시 NextCloud 인증 모달이 열림      ║
+         ║                                                                ║
+         ║  - id="nextcloudStatus": 연결 상태 표시 (사용자명·캘린더명)     ║
+         ║  - id="nextcloudAuthBtn": 연결/해제 버튼                       ║
+         ╚══════════════════════════════════════════════════════════════╝ -->
+    <div class="settings-row settings-account">
+      <div class="account-info">
+        <span class="account-name">NextCloud Calendar</span>
+        <span class="account-email disconnected" id="nextcloudStatus">미연결</span>
+      </div>
+      <div class="account-controls">
+        <button class="account-btn" id="nextcloudAuthBtn">연결</button>
+      </div>
+    </div>
+
+  </div><!-- /settings-panel -->
+
+</div><!-- /widget -->
+
+
+<!-- ╔════════════════════════════════════════════════════════════════════╗
+     ║  ⑥ 우클릭 컨텍스트 메뉴                                              ║
+     ║  - 타이틀바를 우클릭하면 뜨는 작은 메뉴                               ║
+     ║  - 잠금해제 / 동기화 / 설정 / 항상 위 / 종료                         ║
+     ╚════════════════════════════════════════════════════════════════════╝ -->
+<div class="context-menu" id="contextMenu">
+  <div class="ctx-item" id="ctxUnlock">
+    <span class="ctx-icon">🔓</span>
+    <span id="ctxUnlockLabel">잠금 해제</span>
+  </div>
+  <div class="ctx-divider"></div>
+  <div class="ctx-item" id="ctxSync">
+    <span class="ctx-icon">🔄</span>
+    <span>지금 동기화</span>
+  </div>
+  <div class="ctx-item" id="ctxSettings">
+    <span class="ctx-icon">⚙️</span>
+    <span>설정 열기</span>
+  </div>
+  <div class="ctx-divider"></div>
+  <div class="ctx-item" id="ctxAlwaysTop">
+    <span class="ctx-icon">📌</span>
+    <span id="ctxAlwaysTopLabel">항상 위에 표시</span>
+  </div>
+  <div class="ctx-divider"></div>
+  <div class="ctx-item danger" id="ctxQuit">
+    <span class="ctx-icon">✖</span>
+    <span>종료</span>
+  </div>
+</div>
+
+
+<!-- ╔════════════════════════════════════════════════════════════════════╗
+     ║  ⑦ 일정 모달 (일정 추가/편집 팝업창)                                  ║
+     ║                                                                      ║
+     ║  - 날짜 셀을 더블클릭하거나 일정을 클릭하면 화면 가운데에 뜨는 창       ║
+     ║  - 검은 반투명 배경(modal-bg) + 흰색 박스(modal)                     ║
+     ║  - 제목, 날짜, 시간, 알림, 저장위치, 메모 입력 후 저장/삭제           ║
+     ║                                                                      ║
+     ║  ★ NextCloud 연동에서 수정한 곳: <select id="evSource"> 안의          ║
+     ║     nextcloud 옵션. 기존엔 disabled 였는데 이제 활성화됨              ║
+     ╚════════════════════════════════════════════════════════════════════╝ -->
+<div class="modal-bg" id="eventModalBg">
+  <div class="modal">
+    <h3 id="modalTitle">일정 추가</h3>
+
+    <label>제목</label>
+    <input type="text" id="evTitle" placeholder="일정 제목">
+
+    <div class="field-row">
+      <div>
+        <label>날짜</label>
+        <input type="date" id="evDate">
+      </div>
+      <div>
+        <label>시간 (선택)</label>
+        <input type="time" id="evTime">
+      </div>
+    </div>
+
+    <label>알림 (시간이 있을 때만)</label>
+    <div class="alarm-options" id="alarmOptions">
+      <div class="alarm-chip" data-alarm="5min">5분 전</div>
+      <div class="alarm-chip" data-alarm="30min">30분 전</div>
+      <div class="alarm-chip" data-alarm="1day">하루 전</div>
+    </div>
+
+    <label>저장 위치</label>
+    <!-- ★ 수정: nextcloud 옵션의 disabled 와 "(개발 중)" 표시 제거 -->
+    <select id="evSource">
+      <option value="local">로컬</option>
+      <option value="google">Google Calendar</option>
+      <option value="nextcloud">NextCloud</option>
+    </select>
+
+    <!-- 🆕 캘린더 하위 선택 (source가 google/nextcloud일 때만 보임) -->
+    <div id="evCalendarRow" style="display:none">
+      <label>캘린더</label>
+      <select id="evCalendar"></select>
+    </div>
+
+    <label>메모</label>
+    <textarea id="evMemo" placeholder="(선택사항)"></textarea>
+
+    <div class="modal-actions">
+      <button class="btn btn-secondary" id="cancelEvent">취소</button>
+      <button class="btn btn-danger" id="deleteEvent" style="display:none">삭제</button>
+      <button class="btn btn-primary" id="saveEvent">저장</button>
+    </div>
+  </div>
+</div>
+
+
+<!-- ╔════════════════════════════════════════════════════════════════════╗
+     ║  ⑧ NextCloud 인증 모달 (★ 새로 추가된 부분)                          ║
+     ║                                                                      ║
+     ║  설정 패널의 NextCloud "연결" 버튼을 누르면 화면 가운데 뜨는 창.       ║
+     ║  2단계로 구성:                                                         ║
+     ║   - Step1 (ncStep1): 서버주소 / ID / 앱비밀번호 입력 → "연결"          ║
+     ║   - Step2 (ncStep2): 로그인 성공 후, 어떤 캘린더를 쓸지 라디오로 선택   ║
+     ║                                                                      ║
+     ║  app.js의 NextCloud 핸들러가 ncStep1 ↔ ncStep2 를 토글함               ║
+     ╚════════════════════════════════════════════════════════════════════╝ -->
+<div class="modal-bg" id="ncModalBg">
+  <div class="modal">
+
+    <!-- ── Step 1: 서버 정보 입력 ── -->
+    <div id="ncStep1">
+      <h3>NextCloud 연결</h3>
+
+      <label>서버 주소</label>
+      <input type="text" id="ncServer" placeholder="https://cloud.example.com" autocomplete="off">
+
+      <div class="field-row">
+        <div>
+          <label>사용자 ID</label>
+          <input type="text" id="ncUser" autocomplete="off">
+        </div>
+        <div>
+          <label>앱 비밀번호</label>
+          <input type="password" id="ncPass" autocomplete="new-password">
+        </div>
+      </div>
+
+      <!-- 안내문: 앱 비밀번호 사용 권장 -->
+      <p class="nc-hint">
+        보안을 위해 <b>앱 비밀번호</b>를 권장합니다.<br>
+        NextCloud → 설정 → 보안 → 기기 및 세션 → "새 앱 비밀번호 만들기"
+      </p>
+
+      <div class="modal-actions">
+        <button class="btn btn-secondary" id="ncCancel">취소</button>
+        <button class="btn btn-primary" id="ncConnect">연결</button>
+      </div>
+    </div>
+
+    <!-- ── Step 2: 캘린더 선택 (Step1 성공 후 표시, 멀티셀렉) ── -->
+    <div id="ncStep2" style="display:none">
+      <h3>동기화할 캘린더 선택</h3>
+      <p class="cal-select-hint">
+        체크 = 동기화에 포함 · ⭐ 클릭 = 새 일정의 기본 저장 위치 (1개만)
+      </p>
+
+      <!-- app.js가 체크박스+별 항목 리스트로 채워줌 -->
+      <div id="ncCalendars" class="cal-select-list"></div>
+
+      <div class="modal-actions">
+        <button class="btn btn-secondary" id="ncCancel2">취소</button>
+        <button class="btn btn-primary" id="ncSelectDone">완료</button>
+      </div>
+    </div>
+
+  </div>
+</div>
+
+
+<!-- ╔════════════════════════════════════════════════════════════════════╗
+     ║  ⑨ Google 캘린더 선택 모달 (🆕 멀티 캘린더 지원용)                     ║
+     ║                                                                      ║
+     ║  Google 인증 직후 또는 이미 연결된 Google "관리" 클릭 시 뜸.           ║
+     ║  - 가져올 수 있는 캘린더 전체 표시                                     ║
+     ║  - 체크박스로 동기화할 것들 선택                                       ║
+     ║  - ⭐ 별 클릭으로 새 일정의 기본 저장 위치 지정 (1개)                  ║
+     ║  - 좌하단 "연결 해제" 링크 / 우하단 "취소" "저장"                      ║
+     ╚════════════════════════════════════════════════════════════════════╝ -->
+<div class="modal-bg" id="gcalModalBg">
+  <div class="modal">
+    <h3>Google 캘린더 선택</h3>
+    <p class="cal-select-hint">
+      체크 = 동기화에 포함 · ⭐ 클릭 = 새 일정의 기본 저장 위치 (1개만)
+    </p>
+
+    <div id="gcalList" class="cal-select-list"></div>
+
+    <div class="modal-actions modal-actions-split">
+      <button class="link-btn link-btn-danger" id="gcalRevoke">연결 해제</button>
+      <div class="modal-actions-right">
+        <button class="btn btn-secondary" id="gcalCancel">취소</button>
+        <button class="btn btn-primary" id="gcalSave">저장</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+
+<!-- ╔════════════════════════════════════════════════════════════════════╗
+     ║  ⑩ NextCloud "관리" 모달 (🆕 이미 연결된 상태에서 캘린더 재선택용)     ║
+     ║                                                                      ║
+     ║  ncModalBg 와는 별도. 이미 인증돼있을 때 "연결됨" 버튼 클릭 시 뜸.     ║
+     ║  Google 모달과 동일한 UI 패턴.                                         ║
+     ╚════════════════════════════════════════════════════════════════════╝ -->
+<div class="modal-bg" id="ncManageModalBg">
+  <div class="modal">
+    <h3>NextCloud 캘린더 선택</h3>
+    <p class="cal-select-hint">
+      체크 = 동기화에 포함 · ⭐ 클릭 = 새 일정의 기본 저장 위치 (1개만)
+    </p>
+
+    <div id="ncManageList" class="cal-select-list"></div>
+
+    <div class="modal-actions modal-actions-split">
+      <button class="link-btn link-btn-danger" id="ncManageRevoke">연결 해제</button>
+      <div class="modal-actions-right">
+        <button class="btn btn-secondary" id="ncManageCancel">취소</button>
+        <button class="btn btn-primary" id="ncManageSave">저장</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+
+<!-- ╔════════════════════════════════════════════════════════════════════╗
+     ║  ⑪ 일자 팝오버 (날짜 셀 클릭 시 옆에 뜨는 작은 박스)                    ║
+     ║  - 그 날의 일정 목록 + "+" 버튼으로 새 일정 추가                       ║
+     ╚════════════════════════════════════════════════════════════════════╝ -->
+<div class="day-popover" id="dayPopover">
+  <h4>
+    <span id="popoverDate">5월 1일</span>
+    <button class="pop-add" id="popoverAdd">+</button>
+  </h4>
+  <div id="popoverEvents"></div>
+</div>
+
+
+<!-- ⑩ 토스트 (화면 하단에 잠깐 떴다 사라지는 안내 메시지) -->
+<div class="toast" id="toast"></div>
+
+
+<!-- 메인 스크립트 -->
+<script src="app.js"></script>
+</body>
+</html>
