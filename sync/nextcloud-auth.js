@@ -1,4 +1,4 @@
-// sync/nextcloud-auth.js — NextCloud 인증 + 다중 캘린더 선택 관리
+﻿// sync/nextcloud-auth.js — NextCloud 인증 + 다중 캘린더 선택 관리
 // 변경점 (멀티 캘린더):
 //   - selectedCalendarUrl/Name (단일) → selectedCalendars (배열)
 //   - getPrimaryCalendarUrl: 새 일정의 기본 저장 위치

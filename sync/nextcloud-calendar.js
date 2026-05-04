@@ -1,4 +1,4 @@
-// sync/nextcloud-calendar.js — NextCloud 다중 캘린더 양방향 동기화
+﻿// sync/nextcloud-calendar.js — NextCloud 다중 캘린더 양방향 동기화
 // 변경점 (멀티 캘린더):
 //   - 단일 selectedCalendarUrl 의존 제거 → 모든 selectedCalendars 순회
 //   - 캘린더별 etagMap 따로 (etagMap_<calendarUrlHash>)
