@@ -6,6 +6,10 @@ on:
       - 'v*'
   workflow_dispatch:
 
+# 🆕 GITHUB_TOKEN에 release 생성/파일 업로드 권한 부여
+permissions:
+  contents: write
+  
 jobs:
   build-win:
     runs-on: windows-latest
