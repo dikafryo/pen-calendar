@@ -32,6 +32,7 @@
   },
   "build": {
     "appId": "me.neis.calendar",
+    "publish": null,
     "productName": "neisme Calendar",
     "artifactName": "${productName} Setup ${version}.${ext}",
     "files": [

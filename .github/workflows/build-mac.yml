@@ -38,7 +38,9 @@ jobs:
       - name: macOS 빌드 (.dmg)
         env:
           CSC_IDENTITY_AUTO_DISCOVERY: false
-        run: npm run build:mac-universal
+          PUBLISH_FOR_PULL_REQUEST: false
+          EP_PRE_RELEASE: false
+        run: npx electron-builder --mac --universal --publish never
 
       - name: .dmg 업로드
         uses: actions/upload-artifact@v4
