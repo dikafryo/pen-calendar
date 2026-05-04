@@ -1,0 +1,31 @@
+# 의존성
+node_modules/
+
+# 빌드 결과물
+dist/
+out/
+release/
+
+# 민감 정보 (절대 commit 금지)
+google-config.json
+
+# OS 부산물
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# 에디터
+.vscode/
+.idea/
+*.swp
+*~
+
+# 로그
+*.log
+npm-debug.log*
+
+# Electron
+*.app
+*.dmg
+*.exe
+*.zip

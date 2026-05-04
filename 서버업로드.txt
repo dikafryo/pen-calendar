@@ -1,0 +1,9 @@
+# v26.5.6 버전까지 등록완료  5.7 버전을 공개하기전에 다시한번 등록할 것
+
+scp -r main.js preload.js package.json package-lock.json google-config.json renderer sync assets root@100.127.89.84:/var/services/web/apps/desktop-calendar/
+
+
+# 다음번 업데이트 예정
+1. 구글에 캘린더 동기화 권한이 없을 경우, 캘린더 목록 조회 실패 뜨고 설정창이 열리지 않으니까, 연결해지하고 다시 권한을 주고싶어도 그러지 못한다.. 설정창은 무조건 띄워서 목록 이 안뜨더라도 연결 해제를 할수있도록 수정할 것
+
+2. 캘린더가 여러개일 경우 캘린더 색상을 변경할수 있게 하자.

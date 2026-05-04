@@ -1,0 +1,556 @@
+// main.js — Electron 메인 프로세스 (neisme Calendar v1)
+
+const { app, BrowserWindow, Tray, Menu, ipcMain, screen, nativeImage, shell, Notification, globalShortcut } = require('electron');
+const path = require('path');
+const Store = require('electron-store');
+const googleAuth = require('./sync/google-auth');
+const nextcloudAuth = require('./sync/nextcloud-auth');
+
+
+const store = new Store({
+  defaults: {
+    bounds: null,
+    locked: true,
+    alwaysOnTop: true,    // 기본 ON (다른 창 위에 표시)
+    autoStart: true,
+    layout: 'split',
+    opacity: 0.88,
+    fontSize: 10
+  }
+});
+
+let mainWindow = null;
+let tray = null;
+let isQuitting = false;
+// 모듈 레벨 함수: createTray에서 정의되고 createWindow의 show/hide 핸들러에서 호출됨
+let refreshTrayMenu = () => {};
+
+// ─────────────────────────────────────────────
+// 🟢 수정 ① 자동실행 등록 헬퍼 (패키징된 앱에서만 동작)
+// ─────────────────────────────────────────────
+// dev 모드(npm start)에서 setLoginItemSettings를 호출하면
+// process.execPath가 node_modules\electron\dist\electron.exe를 가리켜서
+// 부팅 시 Electron 기본 환영화면이 뜨게 됨. 따라서 패키징 상태에서만 등록.
+function setAutoStart(enabled) {
+  if (!app.isPackaged) {
+    console.log('[autoStart] dev 모드 — 자동실행 등록 건너뜀');
+    return;
+  }
+  app.setLoginItemSettings({
+    openAtLogin: enabled,
+    args: []
+  });
+}
+
+// ─────────────────────────────────────────────
+// 창 생성
+// ─────────────────────────────────────────────
+function getDefaultBounds() {
+  const display = screen.getPrimaryDisplay();
+  const { width, height } = display.workAreaSize;
+  const widgetWidth = Math.min(960, width - 200);
+  const widgetHeight = height - 60;
+  return {
+    x: width - widgetWidth - 20,
+    y: 30,
+    width: widgetWidth,
+    height: widgetHeight
+  };
+}
+
+function createWindow() {
+  const bounds = store.get('bounds') || getDefaultBounds();
+  const locked = store.get('locked');
+
+  mainWindow = new BrowserWindow({
+    ...bounds,
+    minWidth: 480,
+    minHeight: 400,
+    frame: false,
+    transparent: true,
+    backgroundColor: '#00000000',
+    resizable: !locked,
+    movable: !locked,
+    skipTaskbar: true,
+    alwaysOnTop: false,    // ready-to-show에서 store 값에 따라 적용
+    hasShadow: false,
+    show: false,
+    icon: path.join(__dirname, 'assets', 'icon.ico'),
+    webPreferences: {
+      preload: path.join(__dirname, 'preload.js'),
+      contextIsolation: true,
+      nodeIntegration: false,
+      sandbox: false
+    }
+  });
+
+  mainWindow.loadFile(path.join(__dirname, 'renderer', 'index.html'));
+
+  // 🟢 수정 ② --hidden 인자로 시작되면 show를 건너뜀
+  // (기존엔 ready-to-show에서 무조건 show()해서 --hidden이 무시됐음)
+  mainWindow.once('ready-to-show', () => {
+    if (!process.argv.includes('--hidden')) {
+      mainWindow.show();
+    }
+    applyAlwaysOnTop(store.get('alwaysOnTop'));
+  });
+
+  mainWindow.on('moved', saveBounds);
+  mainWindow.on('resized', saveBounds);
+
+  // 가시성 변경 시 트레이 메뉴 라벨 즉시 갱신
+  mainWindow.on('show', () => refreshTrayMenu());
+  mainWindow.on('hide', () => {
+    refreshTrayMenu();
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      mainWindow.webContents.send('window-hidden');
+    }
+  });
+
+  // 닫기 → 트레이로 숨김
+  mainWindow.on('close', (e) => {
+    if (!isQuitting) {
+      e.preventDefault();
+      mainWindow.hide();
+    }
+  });
+
+  if (process.argv.includes('--dev')) {
+    // 🆕 F12 / Ctrl+Shift+I — 창에 포커스 있을 때만 동작
+    mainWindow.webContents.on('before-input-event', (event, input) => {
+      if (input.type !== 'keyDown') return;
+      const isF12 = input.key === 'F12';
+      const isCtrlShiftI = (input.control || input.meta) && input.shift && input.key.toLowerCase() === 'i';
+      if (isF12 || isCtrlShiftI) {
+        mainWindow.webContents.toggleDevTools();
+        event.preventDefault();
+      }
+    });
+
+    mainWindow.webContents.openDevTools({ mode: 'detach' });
+  }
+}
+
+function saveBounds() {
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    store.set('bounds', mainWindow.getBounds());
+  }
+}
+
+// ─────────────────────────────────────────────
+// 항상 위에 표시
+// ─────────────────────────────────────────────
+function applyAlwaysOnTop(enabled) {
+  if (!mainWindow || mainWindow.isDestroyed()) return;
+  try {
+    mainWindow.setAlwaysOnTop(!!enabled, 'normal');
+    mainWindow.setVisibleOnAllWorkspaces(true);
+    // 렌더러 동기화: 설정 패널 체크박스가 어디서 변경되든 즉시 반영
+    mainWindow.webContents.send('always-on-top-changed', !!enabled);
+    console.log('[alwaysOnTop]', enabled);
+  } catch (err) {
+    console.error('[applyAlwaysOnTop]', err);
+  }
+}
+
+// ─────────────────────────────────────────────
+// 잠금 모드
+// ─────────────────────────────────────────────
+function applyLockState(locked, notifyRenderer = true) {
+  if (!mainWindow) return;
+  store.set('locked', locked);
+  mainWindow.setMovable(!locked);
+  mainWindow.setResizable(!locked);
+  if (notifyRenderer) {
+    mainWindow.webContents.send('lock-state-changed', locked);
+  }
+}
+
+// ─────────────────────────────────────────────
+// 시스템 트레이
+// ─────────────────────────────────────────────
+function createTray() {
+  let iconPath;
+  if (process.platform === 'darwin') {
+    // macOS: Template Image (검정 단색, OS가 색 자동 처리)
+    iconPath = path.join(__dirname, 'assets', 'iconTemplate.png');
+  } else if (process.platform === 'win32') {
+    iconPath = path.join(__dirname, 'assets', 'icon.ico');
+  } else {
+    iconPath = path.join(__dirname, 'assets', 'icon.png');
+  }
+
+  let trayIcon;
+  try {
+    trayIcon = nativeImage.createFromPath(iconPath);
+    if (trayIcon.isEmpty()) {
+      console.warn('[Tray] icon empty:', iconPath);
+      trayIcon = nativeImage.createEmpty();
+    } else {
+      console.log('[Tray] icon loaded:', iconPath, trayIcon.getSize());
+    }
+  } catch (err) {
+    console.error('[Tray] icon error:', err);
+    trayIcon = nativeImage.createEmpty();
+  }
+
+  tray = new Tray(trayIcon);
+  tray.setToolTip('neisme Calendar');
+
+  // 메뉴 갱신 함수: 모듈 레벨 변수에 할당
+  refreshTrayMenu = () => {
+    const visible = mainWindow && !mainWindow.isDestroyed() && mainWindow.isVisible();
+    const locked = store.get('locked');
+    const aot = store.get('alwaysOnTop');
+
+    const menu = Menu.buildFromTemplate([
+      {
+        label: visible ? '캘린더 숨기기' : '캘린더 보이기',
+        click: () => toggleWindow()
+      },
+      { type: 'separator' },
+      {
+        label: locked ? '🔒 잠금 해제' : '🔓 잠그기',
+        click: () => applyLockState(!locked)
+      },
+      {
+        label: '항상 위에 표시',
+        type: 'checkbox',
+        checked: !!aot,
+        click: (item) => {
+          store.set('alwaysOnTop', item.checked);
+          applyAlwaysOnTop(item.checked);
+        }
+      },
+      { type: 'separator' },
+      {
+        label: '지금 동기화',
+        click: () => {
+          if (mainWindow) mainWindow.webContents.send('trigger-sync');
+        }
+      },
+      {
+        label: '설정 열기',
+        click: () => {
+          if (mainWindow) {
+            mainWindow.show();
+            mainWindow.webContents.send('open-settings');
+          }
+        }
+      },
+      { type: 'separator' },
+      // 🟢 수정 ③ 트레이 자동실행 체크박스 → setAutoStart() 사용
+      {
+        label: 'Windows 시작 시 자동 실행',
+        type: 'checkbox',
+        checked: store.get('autoStart'),
+        click: (item) => {
+          store.set('autoStart', item.checked);
+          setAutoStart(item.checked);
+        }
+      },
+      { type: 'separator' },
+      {
+        label: '종료',
+        click: () => {
+          isQuitting = true;
+          app.quit();
+        }
+      }
+    ]);
+    tray.setContextMenu(menu);
+  };
+
+  refreshTrayMenu();
+  tray.on('double-click', () => toggleWindow());
+  tray.on('click', () => toggleWindow());
+  // 우클릭 시점에도 한 번 더 갱신 (안전장치)
+  tray.on('right-click', () => refreshTrayMenu());
+
+  // store 변경 → 메뉴 즉시 갱신
+  store.onDidChange('locked', refreshTrayMenu);
+  store.onDidChange('alwaysOnTop', refreshTrayMenu);
+}
+
+function toggleWindow() {
+  if (!mainWindow) return;
+  if (mainWindow.isVisible()) {
+    mainWindow.hide();
+  } else {
+    mainWindow.show();
+    applyAlwaysOnTop(store.get('alwaysOnTop'));
+  }
+}
+
+// ─────────────────────────────────────────────
+// IPC
+// ─────────────────────────────────────────────
+function setupIPC() {
+  ipcMain.handle('set-lock', (e, locked) => {
+    applyLockState(locked, false);
+    return store.get('locked');
+  });
+  ipcMain.handle('get-lock', () => store.get('locked'));
+
+  ipcMain.handle('set-always-on-top', (e, enabled) => {
+    store.set('alwaysOnTop', !!enabled);
+    applyAlwaysOnTop(!!enabled);
+    return store.get('alwaysOnTop');
+  });
+  ipcMain.handle('get-always-on-top', () => store.get('alwaysOnTop'));
+
+  ipcMain.handle('store-get', (e, key) => store.get(key));
+  ipcMain.handle('store-set', (e, key, value) => {
+    store.set(key, value);
+    return true;
+  });
+
+  ipcMain.handle('app-quit', () => {
+    isQuitting = true;
+    app.quit();
+  });
+
+  ipcMain.handle('show-notification', (e, { title, body, urgency }) => {
+    if (Notification.isSupported()) {
+      const n = new Notification({
+        title, body,
+        urgency: urgency || 'normal',
+        silent: false
+      });
+      n.on('click', () => { if (mainWindow) mainWindow.show(); });
+      n.show();
+    }
+  });
+
+  ipcMain.handle('get-app-version', () => app.getVersion());
+  ipcMain.handle('open-external', (e, url) => shell.openExternal(url));
+
+  // ── Google 인증 ─────────────────────────────
+  ipcMain.handle('auth-google', async () => {
+    try {
+      const result = await googleAuth.authenticate();
+      return { ok: true, email: result.email };
+    } catch (err) {
+      return { ok: false, error: err.message };
+    }
+  });
+  ipcMain.handle('auth-google-status', () => ({
+    authenticated: googleAuth.isAuthenticated(),
+    email: googleAuth.getEmail(),
+    connectedAt: googleAuth.getConnectedAt()
+  }));
+  ipcMain.handle('auth-google-revoke', async () => {
+    await googleAuth.revoke();
+    try {
+      require('./sync/google-calendar').clearSyncState();
+      require('./sync/google-tasks').clearSyncState();
+    } catch {}
+    return { ok: true };
+  });
+
+  // ── Google Calendar ──────────────────────────
+  ipcMain.handle('sync-google-calendar', async () => {
+    try {
+      const r = await require('./sync/google-calendar').incrementalSync();
+      return { ok: true, ...r };
+    } catch (err) {
+      console.error('[sync-google-calendar]', err);
+      return { ok: false, error: err.message };
+    }
+  });
+  ipcMain.handle('push-google-event', async (e, event) => {
+    try {
+      const result = await require('./sync/google-calendar').pushEvent(event);
+      return { ok: true, event: result };
+    } catch (err) {
+      console.error('[push-google-event]', err);
+      return { ok: false, error: err.message };
+    }
+  });
+  ipcMain.handle('delete-google-event', async (e, eventOrId) => {
+    try {
+      await require('./sync/google-calendar').deleteEvent(eventOrId);
+      return { ok: true };
+    } catch (err) {
+      console.error('[delete-google-event]', err);
+      return { ok: false, error: err.message };
+    }
+  });
+
+  // ── Google Tasks ─────────────────────────────
+  ipcMain.handle('sync-google-tasks', async () => {
+    try {
+      const r = await require('./sync/google-tasks').incrementalSync();
+      return { ok: true, ...r };
+    } catch (err) {
+      console.error('[sync-google-tasks]', err);
+      return { ok: false, error: err.message };
+    }
+  });
+  ipcMain.handle('push-google-task', async (e, memo) => {
+    try {
+      const task = await require('./sync/google-tasks').pushTask(memo);
+      return { ok: true, task };
+    } catch (err) {
+      console.error('[push-google-task]', err);
+      return { ok: false, error: err.message };
+    }
+  });
+  ipcMain.handle('delete-google-task', async (e, googleId) => {
+    try {
+      await require('./sync/google-tasks').deleteTask(googleId);
+      return { ok: true };
+    } catch (err) {
+      console.error('[delete-google-task]', err);
+      return { ok: false, error: err.message };
+    }
+  });
+
+  // ── NextCloud 인증 ─────────────────────────
+  ipcMain.handle('auth-nextcloud', async (e, config) => {
+    try {
+      const result = await nextcloudAuth.authenticate(config);
+      return { ok: true, ...result };
+    } catch (err) {
+      console.error('[auth-nextcloud]', err);
+      return { ok: false, error: err.message };
+    }
+  });
+  ipcMain.handle('auth-nextcloud-status', () => nextcloudAuth.getStatus());
+  ipcMain.handle('auth-nextcloud-revoke', async () => {
+    nextcloudAuth.revoke();
+    try { require('./sync/nextcloud-calendar').clearSyncState(); } catch {}
+    return { ok: true };
+  });
+  ipcMain.handle('nextcloud-list-calendars', async () => {
+    try {
+      const cals = await nextcloudAuth.listCalendars();
+      return { ok: true, calendars: cals };
+    } catch (err) {
+      return { ok: false, error: err.message };
+    }
+  });
+
+  // ── NextCloud Calendar ──────────────────────
+  ipcMain.handle('sync-nextcloud', async () => {
+    try {
+      const r = await require('./sync/nextcloud-calendar').incrementalSync();
+      return { ok: true, ...r };
+    } catch (err) {
+      console.error('[sync-nextcloud]', err);
+      return { ok: false, error: err.message };
+    }
+  });
+  ipcMain.handle('push-nextcloud-event', async (e, event) => {
+    try {
+      const result = await require('./sync/nextcloud-calendar').pushEvent(event);
+      return { ok: true, event: result };
+    } catch (err) {
+      console.error('[push-nextcloud-event]', err);
+      return { ok: false, error: err.message };
+    }
+  });
+  ipcMain.handle('delete-nextcloud-event', async (e, event) => {
+    try {
+      await require('./sync/nextcloud-calendar').deleteEvent(event);
+      return { ok: true };
+    } catch (err) {
+      console.error('[delete-nextcloud-event]', err);
+      return { ok: false, error: err.message };
+    }
+  });
+
+  // ── Google 다중 캘린더 (🆕) ─────────────────
+  ipcMain.handle('google-list-calendars', async () => {
+    try {
+      const cals = await googleAuth.listCalendars();
+      return { ok: true, calendars: cals };
+    } catch (err) {
+      return { ok: false, error: err.message };
+    }
+  });
+  ipcMain.handle('google-get-selected-calendars', () => googleAuth.getSelectedCalendars());
+  ipcMain.handle('google-set-selected-calendars', (e, list) => {
+    googleAuth.setSelectedCalendars(list);
+    // 캘린더 선택이 바뀌면 syncToken들을 초기화 (다시 fullSync 하도록)
+    try { require('./sync/google-calendar').clearSyncState(); } catch {}
+    return { ok: true };
+  });
+
+  // ── NextCloud 다중 캘린더 (🆕) ───────────────
+  ipcMain.handle('nextcloud-get-selected-calendars', () => {
+    return require('./sync/nextcloud-auth').getSelectedCalendars();
+  });
+  ipcMain.handle('nextcloud-set-selected-calendars', (e, list) => {
+    nextcloudAuth.setSelectedCalendars(list);
+    try { require('./sync/nextcloud-calendar').clearSyncState(); } catch {}
+    return { ok: true };
+  });
+
+  // ── 🆕 임의 범위 동기화 (구글/NextCloud 캘린더 이동 시 자동 호출) ────
+  ipcMain.handle('fetch-google-range', async (e, { startISO, endISO }) => {
+    try {
+      const r = await require('./sync/google-calendar').fetchRange(startISO, endISO);
+      return { ok: true, ...r };
+    } catch (err) {
+      console.error('[fetch-google-range]', err);
+      return { ok: false, error: err.message };
+    }
+  });
+  ipcMain.handle('fetch-nextcloud-range', async (e, { startISO, endISO }) => {
+    try {
+      const r = await require('./sync/nextcloud-calendar').fetchRange(startISO, endISO);
+      return { ok: true, ...r };
+    } catch (err) {
+      console.error('[fetch-nextcloud-range]', err);
+      return { ok: false, error: err.message };
+    }
+  });
+}
+
+// ─────────────────────────────────────────────
+// 단일 인스턴스
+// ─────────────────────────────────────────────
+const gotLock = app.requestSingleInstanceLock();
+if (!gotLock) {
+  app.quit();
+} else {
+  app.on('second-instance', () => {
+    if (mainWindow) {
+      if (!mainWindow.isVisible()) mainWindow.show();
+      mainWindow.focus();
+    }
+  });
+}
+
+// 🟢 수정 ④ whenReady 정리
+//  - setAutoStart() 헬퍼 사용 (dev 모드에서는 등록 안 함)
+//  - 별도 mainWindow.hide() 블록 제거 (--hidden 처리는 ready-to-show에서)
+app.whenReady().then(() => {
+  setAutoStart(store.get('autoStart'));
+
+  setupIPC();
+  createWindow();
+  createTray();
+
+  // 🆕 F12 / Ctrl+Shift+I 로 개발자 도구 열기
+  globalShortcut.register('F12', () => {
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      mainWindow.webContents.toggleDevTools();
+    }
+  });
+  globalShortcut.register('CommandOrControl+Shift+I', () => {
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      mainWindow.webContents.toggleDevTools();
+    }
+  });
+
+  app.on('activate', () => {
+    if (BrowserWindow.getAllWindows().length === 0) createWindow();
+  });
+});
+
+// 🆕 앱 종료 시 단축키 해제
+app.on('will-quit', () => {
+  globalShortcut.unregisterAll();
+});
