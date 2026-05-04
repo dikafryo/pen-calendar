@@ -1,0 +1,55 @@
+name: Build Windows
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+jobs:
+  build-win:
+    runs-on: windows-latest
+
+    steps:
+      - name: 체크아웃
+        uses: actions/checkout@v4
+
+      - name: Node.js 22 설치
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'npm'
+
+      - name: google-config.json 복원
+        env:
+          GOOGLE_CONFIG: ${{ secrets.GOOGLE_CONFIG_JSON }}
+        shell: bash
+        run: |
+          if [ -n "$GOOGLE_CONFIG" ]; then
+            echo "$GOOGLE_CONFIG" > google-config.json
+          else
+            echo '{"client_id":"DUMMY","client_secret":"DUMMY"}' > google-config.json
+          fi
+
+      - name: 의존성 설치
+        run: npm ci
+
+      - name: Windows 빌드 (.exe)
+        run: npm run build:win
+
+      - name: .exe 업로드
+        uses: actions/upload-artifact@v4
+        with:
+          name: neisme-calendar-win
+          path: dist/*.exe
+          retention-days: 30
+
+      - name: GitHub Release 생성 (태그 push 시만)
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*.exe
+          draft: false
+          prerelease: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
