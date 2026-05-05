@@ -168,16 +168,12 @@ function getSampleEvents() {
     return formatDate(d);
   };
   return [
-    { id:'e1', title:'아토미 헤어 PPT 마무리', date:dStr(0),  time:'10:00', source:'local', alarms:['30min'], memo:'' },
-    { id:'e6', title:'헬스장',                date:dStr(-2), time:'19:00', source:'local', alarms:[],         memo:'' }
   ];
 }
 
 /** 첫 실행 샘플 메모 2개 */
 function getSampleMemos() {
   return [
-    { id:'m1', text:'PPT 12장 검토',                completed:false, source:'local' },
-    { id:'m2', text:'Synology DS1821+ 백업 점검',   completed:false, source:'local' }
   ];
 }
 
