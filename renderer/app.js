@@ -1957,6 +1957,8 @@ document.getElementById('syncHeader')?.addEventListener('click', () => {
 //  - 연결됨: 캘린더 관리 모달 오픈 (재선택 또는 연결 해제)
 document.getElementById('googleAuthBtn').addEventListener('click', async (e) => {
   e.stopPropagation();
+  // 🆕 v26.5.7-fix: 다른 모달 정리 (z-index 충돌 방지)
+  closeAllCalendarModals();
   if (!isElectron) { toast('Electron 환경에서만 동작합니다'); return; }
 
   const btn = e.target;
@@ -2227,6 +2229,22 @@ function openNcModal(step1 = true) {
   ncModalBg.classList.add('show');
 }
 
+/**
+ * 🆕 v26.5.7-fix: 다른 모달이 떠있을 때 새 모달 열기 전 정리.
+ *  관리 모달이 안 닫힌 채로 step1을 열면 z-index 충돌로 입력이 막히는 버그 방지.
+ *  - 모든 NextCloud/Google 캘린더 관련 모달의 .show 클래스 제거
+ *  - draft 상태도 같이 비움 (이전 선택 잔존 방지)
+ */
+function closeAllCalendarModals() {
+  // NextCloud
+  document.getElementById('ncModalBg')?.classList.remove('show');
+  document.getElementById('ncManageModalBg')?.classList.remove('show');
+  ncManageDraft = [];
+  // Google
+  document.getElementById('gcalModalBg')?.classList.remove('show');
+  gcalDraft = [];
+}
+
 /** NextCloud 모달 닫기. 비밀번호 필드는 보안상 매번 비움 */
 function closeNcModal() {
   ncModalBg.classList.remove('show');
@@ -2250,13 +2268,14 @@ document.getElementById('nextcloudAuthBtn').addEventListener('click', async (e) 
   e.stopPropagation();
   if (!isElectron) { toast('Electron 환경에서만 동작합니다'); return; }
 
+  // 🆕 v26.5.7-fix: 다른 모달 정리 (z-index 충돌 방지)
+  closeAllCalendarModals();
+
   const status = await window.electronAPI.authNextcloudStatus();
 
   if (status.authenticated) {
-    // 이미 인증됨 → 관리 모달
     await openNextcloudManageModal();
   } else {
-    // 미연결 → step1
     document.getElementById('ncServer').value = '';
     document.getElementById('ncUser').value = '';
     document.getElementById('ncPass').value = '';
@@ -2414,10 +2433,16 @@ async function openNextcloudManageModal() {
 
   ncManageDraft = allCals.map(c => {
     const saved = selected.find(s => s.url === c.url);
+    // 🆕 v26.5.7: 원본색 우선순위 = 서버 응답 > 저장된 originalColor > 폴백
+    //   서버에서 calendar-color 새로 왔으면 그게 진짜 원본
+    //   없으면 이전에 저장해둔 originalColor 사용
+    //   둘 다 없으면 NextCloud 브랜드색 폴백
+    const originalColor = c.color || (saved && saved.originalColor) || '#0082c9';
     return {
       url: c.url,
       displayName: c.displayName,
-      customColor: (saved && saved.customColor) || '#0082c9',   // 🆕
+      originalColor: originalColor,   // 🆕 ↺ 리셋 시 돌아갈 색
+      customColor: (saved && saved.customColor) || originalColor,
       _checked: selectedUrls.has(c.url),
       isPrimary: c.url === primaryUrl
     };
@@ -2489,7 +2514,8 @@ function renderNcManageList(listError) {
     btn.addEventListener('click', e => {
       e.stopPropagation();
       const i = parseInt(btn.closest('.cal-select-item').dataset.idx, 10);
-      ncManageDraft[i].customColor = '#0082c9';
+      // 🆕 NextCloud 원본 색으로 복원 (없으면 브랜드색 폴백)
+      ncManageDraft[i].customColor = ncManageDraft[i].originalColor || '#0082c9';
       renderNcManageList(listError);
     });
   });
@@ -2515,7 +2541,8 @@ document.getElementById('ncManageSave').addEventListener('click', async () => {
   const picked = ncManageDraft.filter(c => c._checked).map(c => ({
     url: c.url,
     displayName: calDisplayName(c, 'nextcloud'),
-    customColor: c.customColor,    // 🆕
+    originalColor: c.originalColor,   // 🆕 다음 모달 열 때 ↺ 복원용
+    customColor: c.customColor,
     isPrimary: c.isPrimary
   }));
 
