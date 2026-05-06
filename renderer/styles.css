@@ -532,7 +532,7 @@ body {
   text-transform: uppercase;
   letter-spacing: 0.3px;
 }
-.modal input:not([type="checkbox"]):not([type="radio"]),
+.modal input:not([type="checkbox"]):not([type="radio"]):not([type="color"]),
 .modal select,
 .modal textarea {
   width: 100%;
@@ -875,15 +875,16 @@ body {
 .cal-select-item:hover      { background: #f0f7ff; }
 
 .cal-select-item .cal-check { margin: 0; cursor: pointer; }
-
 /* ╔══════════════════════════════════════════════════════════════════╗
-   ║  🆕 캘린더 선택 모달 — 컬러 피커 + 에러 안내 박스                  ║
+   ║  🆕 캘린더 선택 모달 — 컬러 피커 + 에러 안내 박스                   ║
    ╚══════════════════════════════════════════════════════════════════╝ */
 
-/* 색상 input을 동그란 도트처럼 보이게 */
-.cal-color-input {
-  width: 14px;
-  height: 14px;
+/* color input을 동그란 도트처럼 (16px) */
+.cal-select-item .cal-color-input {
+  width: 16px;
+  height: 16px;
+  min-width: 16px;
+  max-width: 16px;
   border-radius: 50%;
   border: 1px solid rgba(0, 0, 0, 0.15);
   padding: 0;
@@ -892,12 +893,14 @@ body {
   -webkit-appearance: none;
   background: transparent;
   flex-shrink: 0;
+  flex-grow: 0;
   overflow: hidden;
+  box-sizing: border-box;
 }
-.cal-color-input::-webkit-color-swatch-wrapper { padding: 0; border-radius: 50%; }
-.cal-color-input::-webkit-color-swatch         { border: none; border-radius: 50%; }
-.cal-color-input::-moz-color-swatch            { border: none; border-radius: 50%; }
-.cal-color-input:hover { transform: scale(1.15); transition: transform 0.1s; }
+.cal-select-item .cal-color-input::-webkit-color-swatch-wrapper { padding: 0; border-radius: 50%; }
+.cal-select-item .cal-color-input::-webkit-color-swatch         { border: none; border-radius: 50%; }
+.cal-select-item .cal-color-input::-moz-color-swatch            { border: none; border-radius: 50%; }
+.cal-select-item .cal-color-input:hover { transform: scale(1.15); transition: transform 0.1s; }
 
 /* 색상 리셋 버튼 (↺) */
 .cal-color-reset {
@@ -909,6 +912,7 @@ body {
   color: #aaa;
   border-radius: 4px;
   line-height: 1;
+  flex-shrink: 0;
 }
 .cal-color-reset:hover { background: rgba(0,0,0,0.07); color: #555; }
 
@@ -922,12 +926,19 @@ body {
   line-height: 1.55;
 }
 .cal-select-error b { color: #6b4500; }
+.cal-select-error small { font-size: 10.5px; }
 
-/* 🆕 today 셀의 일정은 inline style보다 우선 (흰색 강제) */
+/* today 셀의 일정은 inline style보다 우선 (흰색 강제) */
 .day.today .day-event {
   background: rgba(255, 255, 255, 0.28) !important;
   color: white !important;
   border-left-color: rgba(255,255,255,0.6) !important;
+}
+
+/* 모달 내 캘린더 목록 컨테이너 — 가로 스크롤 방지 */
+#gcalList, #ncManageList {
+  overflow-x: hidden;
+  overflow-y: auto;
 }
 
 .cal-color-dot {
