@@ -292,6 +292,16 @@ function setupIPC() {
   });
   ipcMain.handle('get-lock', () => store.get('locked'));
 
+  // 🔧 v26.5.8a-fix1: 모달 열기 직전 OS-level focus 강제
+  // alwaysOnTop 위젯은 click을 받아도 native focus가 안 들어와서
+  // element.focus()만으로는 키보드 입력이 안 되는 케이스가 있음.
+  ipcMain.handle('focus-window', () => {
+    if (!mainWindow || mainWindow.isDestroyed()) return;
+    if (mainWindow.isMinimized()) mainWindow.restore();
+    mainWindow.focus();              // native window에 OS focus
+    mainWindow.webContents.focus();  // 그 안의 webContents에 focus
+  });
+
   ipcMain.handle('set-always-on-top', (e, enabled) => {
     store.set('alwaysOnTop', !!enabled);
     applyAlwaysOnTop(!!enabled);

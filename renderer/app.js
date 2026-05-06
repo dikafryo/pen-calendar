@@ -35,6 +35,11 @@ const state = {
   selectedDate: new Date(),     // 사용자가 마지막으로 클릭한 날짜
   editingEventId: null,         // 일정 편집 모달이 열려있을 때 그 일정 id (없으면 null=신규)
   editingAlarms: new Set(),     // 모달에서 켜둔 알람들 ('5min', '30min', '1day')
+  // 🆕 v26.5.8a 반복 인스턴스 편집 컨텍스트
+  // 가상 또는 분리된 인스턴스를 열었을 때만 채워짐:
+  //   { masterId: string, instanceDate: "YYYY-MM-DD", isVirtual: boolean }
+  // null이면 일반 단일 일정 편집
+  editingInstanceContext: null,
   locked: true,                 // 창 잠금 상태 (잠그면 드래그/리사이즈 불가)
   events: [],                   // 모든 일정 목록 (로컬+Google+NextCloud 합쳐서 보관)
   memos: [],                    // 모든 메모/할 일 목록 (로컬+Google Tasks)
@@ -430,6 +435,14 @@ function renderCalendar() {
 
   const dates = getViewDates();   // 35일치 Date 배열
 
+  // 🆕 v26.5.8a 5주 윈도우 안의 가상 반복 인스턴스 미리 펼치기 → 날짜별 캐시
+  const _rangeStart = new Date(state.viewWeekStart);
+  _rangeStart.setHours(0, 0, 0, 0);
+  const _rangeEnd = new Date(state.viewWeekStart);
+  _rangeEnd.setDate(state.viewWeekStart.getDate() + 35);
+  _rangeEnd.setHours(0, 0, 0, 0);
+  const eventsByDate = buildEventsByDateMap(_rangeStart, _rangeEnd);
+
   // ── 35개 셀을 하나씩 만들어 그리드에 붙이기 ──
   dates.forEach((d, i) => {
     const cell = document.createElement('div');
@@ -480,11 +493,9 @@ function renderCalendar() {
     // 오늘 강조
     if (sameDate(d, today)) cell.classList.add('today');
 
-    // ── 이 날짜의 일정 추출 ── (시간순 정렬)
+    // ── 이 날짜의 일정 추출 ── (시간순 정렬, 🆕 가상 인스턴스 포함)
     const dateStr = formatDate(d);
-    const dayEvents = state.events
-      .filter(e => e.date === dateStr)
-      .sort((a,b) => (a.time||'99:99').localeCompare(b.time||'99:99'));
+    const dayEvents = eventsByDate[dateStr] || [];
 
     const hasAlarm = dayEvents.some(e => e.alarms && e.alarms.length > 0);
 
@@ -494,11 +505,15 @@ function renderCalendar() {
     // ── 일정 텍스트 HTML 만들기 ──
     let eventHtml = '';
     if (!isCompact) {
-      eventHtml = dayEvents.slice(0, maxEvents).map(e => `
-        <div class="day-event ${e.source}" style="${eventInlineStyle(e)}" title="${escapeHtml(e.title)}${e.time ? ' ' + e.time : ''}">
-          ${e.time ? `<b>${e.time.slice(0,5)}</b> ` : ''}${escapeHtml(e.title)}
+      eventHtml = dayEvents.slice(0, maxEvents).map(e => {
+        // 🆕 반복 일정 마커 (마스터/가상/분리 모두 표시)
+        const recMark = isPartOfRecurrence(e) ? '<span class="recurrence-mark">🔁</span>' : '';
+        return `
+        <div class="day-event ${e.source}" style="${eventInlineStyle(e)}" title="${escapeHtml(e.title)}${e.time ? ' ' + e.time : ''}" data-id="${e.id}">
+          ${e.time ? `<b>${e.time.slice(0,5)}</b> ` : ''}${recMark}${escapeHtml(e.title)}
         </div>
-      `).join('');
+      `;
+      }).join('');
       if (dayEvents.length > maxEvents) {
         const moreText = isHalf ? `+${dayEvents.length - maxEvents}` : `+${dayEvents.length - maxEvents}개 더`;
         eventHtml += `<div class="day-event-more">${moreText}</div>`;
@@ -556,10 +571,8 @@ function showDayPopover(cell, date) {
   const pop = document.getElementById('dayPopover');
   const dateStr = formatDate(date);
 
-  // 그 날의 일정 (시간순)
-  const events = state.events
-    .filter(e => e.date === dateStr)
-    .sort((a,b) => (a.time||'99:99').localeCompare(b.time||'99:99'));
+  // 🆕 v26.5.8a 가상 반복 인스턴스 포함하여 그 날의 일정 가져오기
+  const events = getEventsForDate(dateStr);
 
   // 헤더 날짜 표시 ("5월 1일 (목)")
   document.getElementById('popoverDate').textContent =
@@ -568,18 +581,22 @@ function showDayPopover(cell, date) {
   // 일정 리스트 HTML
   const eventsHtml = events.length === 0
     ? '<div class="pop-empty">일정이 없습니다</div>'
-    : events.map(e => `
+    : events.map(e => {
+        // 🆕 반복 마커
+        const recMark = isPartOfRecurrence(e) ? '<span class="recurrence-mark">🔁</span> ' : '';
+        return `
         <div class="pop-event" data-id="${e.id}">
           <div class="pop-event-color" style="background:${eventColor(e)}"></div>
           <div class="pop-event-info">
-            <div class="pop-event-title">${escapeHtml(e.title)}</div>
+            <div class="pop-event-title">${recMark}${escapeHtml(e.title)}</div>
             <div class="pop-event-time">
               ${e.time || '종일'}
               ${e.alarms && e.alarms.length ? ` · 🔔 ${e.alarms.map(alarmLabel).join(', ')}` : ''}
             </div>
           </div>
         </div>
-      `).join('');
+      `;
+      }).join('');
   document.getElementById('popoverEvents').innerHTML = eventsHtml;
 
   // ── 팝오버 위치: 셀 오른쪽 옆에 ──
@@ -590,9 +607,10 @@ function showDayPopover(cell, date) {
   pop.classList.add('show');
 
   // ── 일정 항목 클릭 → 편집 모달 ──
+  // 🆕 v26.5.8a 가상 인스턴스도 클릭으로 편집 가능 (events 클로저에서 직접 찾음)
   pop.querySelectorAll('.pop-event').forEach(el => {
     el.addEventListener('click', () => {
-      const ev = state.events.find(x => x.id === el.dataset.id);
+      const ev = events.find(x => x.id === el.dataset.id);
       if (ev) { hideDayPopover(); openEventModal(ev); }
     });
   });
@@ -867,6 +885,320 @@ function calDisplayName(c, source) {
 
 
 // ╔══════════════════════════════════════════════════════════════════╗
+// ║  🆕 v26.5.8a 반복 일정 (RRULE) 헬퍼들                                ║
+// ║                                                                  ║
+// ║  - parseRrule:     "FREQ=WEEKLY;COUNT=10" → { freq, interval, ...} ║
+// ║  - buildRrule:     반대 방향                                       ║
+// ║  - expandRruleDates: 마스터 startDate + RRULE → 인스턴스 날짜 배열  ║
+// ║  - expandRecurrencesForRange: 5주 윈도우용 모든 마스터 펼치기       ║
+// ║                                                                  ║
+// ║  지원하는 RRULE 부분 (v26.5.8a 범위):                              ║
+// ║   - FREQ:     DAILY / WEEKLY / MONTHLY / YEARLY                  ║
+// ║   - INTERVAL: 1~99 (예: INTERVAL=2 + WEEKLY = 격주)               ║
+// ║   - COUNT:    N회 반복                                            ║
+// ║   - UNTIL:    YYYYMMDD 또는 YYYYMMDDTHHMMSSZ 형식                 ║
+// ║                                                                  ║
+// ║  v26.5.8a에선 BYDAY/BYMONTHDAY 등은 미지원. 향후 확장.              ║
+// ║  Google/NextCloud의 복잡한 RRULE은 v26.5.8c에서 main 위임.        ║
+// ╚══════════════════════════════════════════════════════════════════╝
+
+const RRULE_FREQS = ['DAILY', 'WEEKLY', 'MONTHLY', 'YEARLY'];
+
+/**
+ * RRULE 문자열 파싱.
+ * @param {string} str  "FREQ=WEEKLY;COUNT=10" 같은 형식
+ * @returns {object|null}  { freq, interval, count, until }, 잘못된 형식이면 null
+ */
+function parseRrule(str) {
+  if (!str || typeof str !== 'string') return null;
+  // RRULE: 접두사가 있으면 제거 (RFC 5545 정식 형태와 호환)
+  const body = str.replace(/^RRULE:/i, '').trim();
+  if (!body) return null;
+
+  const parts = {};
+  body.split(';').forEach(p => {
+    const [k, v] = p.split('=');
+    if (k && v) parts[k.toUpperCase()] = v;
+  });
+
+  if (!RRULE_FREQS.includes(parts.FREQ)) return null;
+
+  const out = {
+    freq: parts.FREQ,
+    interval: Math.max(1, parseInt(parts.INTERVAL || '1', 10) || 1),
+    count: null,
+    until: null
+  };
+
+  if (parts.COUNT) {
+    const n = parseInt(parts.COUNT, 10);
+    if (n > 0) out.count = n;
+  }
+  if (parts.UNTIL) {
+    // YYYYMMDD or YYYYMMDDTHHMMSSZ
+    const m = /^(\d{4})(\d{2})(\d{2})/.exec(parts.UNTIL);
+    if (m) out.until = `${m[1]}-${m[2]}-${m[3]}`;
+  }
+  return out;
+}
+
+/**
+ * 파싱된 RRULE 객체를 다시 문자열로.
+ * @param {object} r  { freq, interval, count, until }
+ * @returns {string}
+ */
+function buildRrule(r) {
+  if (!r || !RRULE_FREQS.includes(r.freq)) return '';
+  const parts = [`FREQ=${r.freq}`];
+  if (r.interval && r.interval > 1) parts.push(`INTERVAL=${r.interval}`);
+  if (r.count && r.count > 0) parts.push(`COUNT=${r.count}`);
+  if (r.until) {
+    // "YYYY-MM-DD" → "YYYYMMDD"
+    parts.push(`UNTIL=${r.until.replace(/-/g, '')}`);
+  }
+  return parts.join(';');
+}
+
+/**
+ * 한 마스터 일정의 인스턴스 날짜 배열을 [rangeStart, rangeEnd) 범위에서 계산.
+ *
+ * 표준 RFC 5545 동작 흉내:
+ *  - MONTHLY/YEARLY에서 그 달/해에 마스터의 day-of-month가 없으면(예: 2월 31일)
+ *    그 인스턴스는 "발생 안 한 것"으로 처리 (COUNT도 차감 안 함)
+ *  - DAILY/WEEKLY는 단순 날짜 더하기
+ *  - INTERVAL, COUNT, UNTIL 지원
+ *
+ * @param {string} masterDate  마스터 시작 날짜 "YYYY-MM-DD"
+ * @param {object} rrule       parseRrule 결과 객체
+ * @param {Date} rangeStart    범위 시작 (Date, 시간 무시) — 이 시각 이상만 결과에 포함
+ * @param {Date} rangeEnd      범위 끝 (exclusive) — 이 시각 미만만 포함
+ * @param {string[]} exdates   제외 날짜 배열
+ * @returns {string[]}         "YYYY-MM-DD" 배열 (정렬됨, exdates 제외됨)
+ */
+function expandRruleDates(masterDate, rrule, rangeStart, rangeEnd, exdates) {
+  if (!masterDate || !rrule) return [];
+  const exSet = new Set(exdates || []);
+  const result = [];
+  const safetyLimit = 2500;   // 안전장치 (대략 7년치 매일도 커버)
+
+  const [my, mm, md] = masterDate.split('-').map(Number);
+  const origDay = md;
+  const origMonth0 = mm - 1;   // YEARLY용 (월은 고정)
+  const interval = rrule.interval || 1;
+
+  let untilTs = null;
+  if (rrule.until) {
+    const [uy, um, ud] = rrule.until.split('-').map(Number);
+    untilTs = new Date(uy, um - 1, ud, 23, 59, 59, 999).getTime();
+  }
+
+  // cursor (현재 시도 중인 위치) — DAILY/WEEKLY는 (Y,M,D) 그대로 진행
+  // MONTHLY는 (Y,M) 진행, YEARLY는 (Y) 진행
+  let cursorY = my, cursorM = mm - 1, cursorD = md;
+  let occurrence = 0;
+
+  for (let iter = 0; iter < safetyLimit; iter++) {
+    // ── 현재 cursor가 가리키는 실제 인스턴스 날짜 결정 ──
+    let valid = true;
+    let dt;
+
+    if (rrule.freq === 'MONTHLY') {
+      // 이 달에 origDay가 있는지 검사 (예: 2월에 31일 없음 → invalid)
+      const lastOfMonth = new Date(cursorY, cursorM + 1, 0).getDate();
+      if (origDay > lastOfMonth) valid = false;
+      else dt = new Date(cursorY, cursorM, origDay);
+    } else if (rrule.freq === 'YEARLY') {
+      // origMonth0/origDay가 그 해에 있는지 (윤년 2/29 등)
+      const lastOfMonth = new Date(cursorY, origMonth0 + 1, 0).getDate();
+      if (origDay > lastOfMonth) valid = false;
+      else dt = new Date(cursorY, origMonth0, origDay);
+    } else {
+      // DAILY / WEEKLY
+      dt = new Date(cursorY, cursorM, cursorD);
+    }
+
+    if (valid && dt) {
+      const ts = dt.getTime();
+      // 종료 조건 1: COUNT 도달
+      if (rrule.count != null && occurrence >= rrule.count) break;
+      // 종료 조건 2: UNTIL 지남
+      if (untilTs != null && ts > untilTs) break;
+      // 종료 조건 3: 범위 종료점을 한참 지남 → 더 가도 결과 없음
+      if (ts >= rangeEnd.getTime()) break;
+
+      const inRange = ts >= rangeStart.getTime();
+      const dateStr = formatDate(dt);
+      if (inRange && !exSet.has(dateStr)) result.push(dateStr);
+      occurrence++;
+    }
+    // valid=false (예: 2월 31일) 이면 occurrence 카운트 안 함, 그냥 다음으로 advance
+
+    // ── 다음 단위로 advance ──
+    if (rrule.freq === 'DAILY') {
+      const next = new Date(cursorY, cursorM, cursorD + interval);
+      cursorY = next.getFullYear(); cursorM = next.getMonth(); cursorD = next.getDate();
+    } else if (rrule.freq === 'WEEKLY') {
+      const next = new Date(cursorY, cursorM, cursorD + 7 * interval);
+      cursorY = next.getFullYear(); cursorM = next.getMonth(); cursorD = next.getDate();
+    } else if (rrule.freq === 'MONTHLY') {
+      cursorM += interval;
+      while (cursorM >= 12) { cursorY++; cursorM -= 12; }
+    } else if (rrule.freq === 'YEARLY') {
+      cursorY += interval;
+    } else {
+      break;   // 미지원 freq
+    }
+  }
+
+  return result;
+}
+
+/**
+ * 5주 윈도우 안의 모든 반복 인스턴스를 펼침.
+ * - 마스터 이벤트(`recurrence` 필드 있음)만 대상
+ * - 분리된 인스턴스(다른 이벤트가 recurrenceId === master.id && originalStart === instDate)가 있는 날짜는 가상 인스턴스 만들지 않음
+ * - exdates에 있는 날짜는 스킵
+ *
+ * @param {Date} rangeStart  5주 그리드 시작일 (Date)
+ * @param {Date} rangeEnd    5주 그리드 끝 (exclusive)
+ * @returns {Array}  가상 인스턴스 객체 배열 (id="<master.id>:<dateStr>", _virtualOf=master.id)
+ */
+function expandRecurrencesForRange(rangeStart, rangeEnd) {
+  const out = [];
+
+  // 분리된 인스턴스 인덱스: { "<masterId>|<originalStart>": true }
+  // → 같은 날짜에 가상 인스턴스 안 만들기
+  const detachedIndex = new Set();
+  state.events.forEach(e => {
+    if (e.recurrenceId && e.originalStart) {
+      detachedIndex.add(`${e.recurrenceId}|${e.originalStart}`);
+    }
+  });
+
+  state.events.forEach(master => {
+    if (!master.recurrence) return;
+    const rrule = parseRrule(master.recurrence);
+    if (!rrule) return;
+    const dates = expandRruleDates(master.date, rrule, rangeStart, rangeEnd, master.exdates);
+    dates.forEach(dateStr => {
+      // 이미 분리된 인스턴스가 있으면 가상 인스턴스 생성 X
+      if (detachedIndex.has(`${master.id}|${dateStr}`)) return;
+      // 마스터 자기 자신의 시작일은 마스터 이벤트가 그대로 있어야 하므로 가상 인스턴스 X
+      // (아래 renderCalendar에서 일반 events 필터에 마스터가 포함됨)
+      // → 그래서 마스터의 date와 일치하는 인스턴스만 한 번 더 안 만들면 됨.
+      if (dateStr === master.date) return;
+
+      out.push({
+        ...master,
+        id: `${master.id}:${dateStr}`,
+        date: dateStr,
+        _virtualOf: master.id,
+        _instanceDate: dateStr,
+        // 가상 인스턴스 자체엔 RRULE 정보 표면화 X (마스터에서 다시 읽음)
+        recurrence: undefined,
+        exdates: undefined
+      });
+    });
+  });
+
+  return out;
+}
+
+/**
+ * 사용자에게 보일 RRULE 한국어 설명 (모달에서 hint 텍스트로 표시).
+ */
+function describeRrule(r) {
+  if (!r) return '';
+  const interval = r.interval > 1 ? r.interval : 1;
+  const freqStr = (() => {
+    if (r.freq === 'DAILY')   return interval === 1 ? '매일' : `${interval}일마다`;
+    if (r.freq === 'WEEKLY')  return interval === 1 ? '매주' : `${interval}주마다`;
+    if (r.freq === 'MONTHLY') return interval === 1 ? '매월' : `${interval}개월마다`;
+    if (r.freq === 'YEARLY')  return interval === 1 ? '매년' : `${interval}년마다`;
+    return '';
+  })();
+  let endStr = '';
+  if (r.count) endStr = ` · 총 ${r.count}회`;
+  else if (r.until) endStr = ` · ${r.until}까지`;
+  else endStr = ' · 종료 없음';
+  return `${freqStr}${endStr}`;
+}
+
+/**
+ * 가상/분리된 인스턴스에서 마스터 이벤트를 찾기.
+ * - 일반 이벤트(recurrence 없음): 그 자체가 마스터처럼 동작
+ * - 가상 인스턴스(_virtualOf): _virtualOf로 마스터 찾음
+ * - 분리된 인스턴스(recurrenceId): recurrenceId로 마스터 찾음
+ * @returns {object|null}
+ */
+function findMasterOf(ev) {
+  if (!ev) return null;
+  if (ev._virtualOf) return state.events.find(e => e.id === ev._virtualOf) || null;
+  if (ev.recurrenceId) return state.events.find(e => e.id === ev.recurrenceId) || null;
+  return ev;   // 자기 자신이 마스터
+}
+
+/**
+ * 이벤트가 반복 시리즈에 속하는지.
+ * - 마스터: recurrence 있음
+ * - 가상 인스턴스: _virtualOf 있음
+ * - 분리된 인스턴스: recurrenceId 있음
+ */
+function isPartOfRecurrence(ev) {
+  return !!(ev && (ev.recurrence || ev._virtualOf || ev.recurrenceId));
+}
+
+/**
+ * "YYYY-MM-DD" 형식 날짜를 하루 빼서 반환 (UNTIL 계산용).
+ */
+function dateMinusOne(dateStr) {
+  const [y, m, d] = dateStr.split('-').map(Number);
+  const dt = new Date(y, m - 1, d);
+  dt.setDate(dt.getDate() - 1);
+  return formatDate(dt);
+}
+
+/**
+ * 🆕 v26.5.8a 한 날짜의 모든 이벤트(직접 저장된 + 가상 인스턴스) 시간순 반환.
+ * showDayPopover에서 사용. renderCalendar는 5주 한꺼번에 캐시하므로 별도 처리.
+ */
+function getEventsForDate(dateStr) {
+  const direct = state.events.filter(e => e.date === dateStr);
+  const [y, m, d] = dateStr.split('-').map(Number);
+  const oneDay = new Date(y, m - 1, d, 0, 0, 0, 0);
+  const nextDay = new Date(y, m - 1, d + 1, 0, 0, 0, 0);
+  const virtual = expandRecurrencesForRange(oneDay, nextDay);
+  return [...direct, ...virtual]
+    .sort((a, b) => (a.time || '99:99').localeCompare(b.time || '99:99'));
+}
+
+/**
+ * 🆕 v26.5.8a 5주 윈도우 안의 모든 이벤트를 날짜별로 그룹핑.
+ * renderCalendar에서 35번 filter 안 하고 한 번에 처리하기 위한 캐시.
+ */
+function buildEventsByDateMap(rangeStart, rangeEnd) {
+  const map = {};
+  // 직접 저장된 이벤트 (마스터 + 분리된 인스턴스 + 일반)
+  state.events.forEach(e => {
+    if (!e.date) return;
+    if (!map[e.date]) map[e.date] = [];
+    map[e.date].push(e);
+  });
+  // 가상 인스턴스
+  const virtual = expandRecurrencesForRange(rangeStart, rangeEnd);
+  virtual.forEach(e => {
+    if (!map[e.date]) map[e.date] = [];
+    map[e.date].push(e);
+  });
+  // 각 날짜별로 시간순 정렬
+  Object.keys(map).forEach(k => {
+    map[k].sort((a, b) => (a.time || '99:99').localeCompare(b.time || '99:99'));
+  });
+  return map;
+}
+
+
+// ╔══════════════════════════════════════════════════════════════════╗
 // ║  ▼ 일정 모달 (Event Modal)                                          ║
 // ║                                                                  ║
 // ║  날짜 셀 더블클릭 / 팝오버에서 일정 클릭 시 열리는 큰 팝업창.          ║
@@ -885,12 +1217,19 @@ function calDisplayName(c, source) {
  * @param {Date} [defaultDate]      신규 일정의 기본 날짜 (해당 셀의 날짜)
  */
 function openEventModal(event, defaultDate) {
+  // 🔧 v26.5.8a-fix1: 진입 시 모든 보조 overlay 정리 (방어)
+  document.getElementById('recScopeModalBg').classList.remove('show');
+  document.getElementById('settingsPanel').classList.remove('show');
+  if (typeof hideContextMenu === 'function') hideContextMenu();
+  if (typeof hideDayPopover === 'function') hideDayPopover();
+  
   const bg     = document.getElementById('eventModalBg');     // 검은 반투명 배경
   const title  = document.getElementById('modalTitle');        // 제목 ("일정 추가" / "일정 편집")
   const delBtn = document.getElementById('deleteEvent');       // 삭제 버튼 (편집 시만 표시)
 
   // 모달이 열릴 때마다 알람 선택 초기화
   state.editingAlarms = new Set();
+  state.editingInstanceContext = null;   // 🆕 v26.5.8a 인스턴스 컨텍스트 초기화
 
   // ── source 드롭다운 옵션 활성화/비활성화 ──
   // Google이 연결 안 됐으면 'google' 옵션을 disabled로
@@ -903,15 +1242,49 @@ function openEventModal(event, defaultDate) {
 
   if (event) {
     // ─── 편집 모드: 기존 값 채우기 ───
-    state.editingEventId = event.id;
-    title.textContent = '일정 편집';
-    document.getElementById('evTitle').value  = event.title;
-    document.getElementById('evDate').value   = event.date;
-    document.getElementById('evTime').value   = event.time || '';
-    document.getElementById('evSource').value = event.source;
-    document.getElementById('evMemo').value   = event.memo || '';
+
+    // 🆕 v26.5.8a 가상/분리 인스턴스면 마스터 찾고 컨텍스트 저장
+    let editTarget = event;
+    if (event._virtualOf) {
+      // 가상 인스턴스 → 마스터를 폼의 기준으로 사용 (모든 변경은 단일/미래/전체 스코프에서 결정)
+      const master = state.events.find(e => e.id === event._virtualOf);
+      editTarget = master || event;
+      state.editingInstanceContext = {
+        masterId: event._virtualOf,
+        instanceDate: event._instanceDate,
+        isVirtual: true
+      };
+      state.editingEventId = event._virtualOf;   // 마스터 id로 추적
+    } else if (event.recurrenceId) {
+      // 분리된 인스턴스 → 자기 자신을 기준 (이미 한번 분리됨, RRULE 없음)
+      editTarget = event;
+      state.editingInstanceContext = {
+        masterId: event.recurrenceId,
+        instanceDate: event.originalStart || event.date,
+        isVirtual: false
+      };
+      state.editingEventId = event.id;
+    } else {
+      // 일반 또는 마스터 자체 (date===master.date)를 직접 클릭한 경우.
+      // 마스터 직접 편집 = 시리즈 전체 편집으로 간주 (다이얼로그 X).
+      // 일반 편집 분기에 들어가서 마스터의 recurrence/필드만 갱신.
+      state.editingEventId = event.id;
+      // ctx는 null 유지 → saveEvent의 일반 편집 분기로 흐름
+    }
+
+    title.textContent = '일정 편집' + (state.editingInstanceContext ? ' (반복)' : '');
+    document.getElementById('evTitle').value  = editTarget.title || '';
+    // 가상 인스턴스를 편집할 때는 날짜는 "그 인스턴스의 날짜"로 보여야 함
+    document.getElementById('evDate').value   = (event._instanceDate || event.date || editTarget.date);
+    document.getElementById('evTime').value   = (event.time || editTarget.time || '');
+    document.getElementById('evSource').value = editTarget.source || 'local';
+    document.getElementById('evMemo').value   = (event.memo || editTarget.memo || '');
     // 기존 알람들을 editingAlarms에 채워서 칩(chip) 활성화 상태로
-    (event.alarms || []).forEach(a => state.editingAlarms.add(a));
+    (editTarget.alarms || []).forEach(a => state.editingAlarms.add(a));
+
+    // 🆕 v26.5.8a 반복 폼 채우기 (마스터의 recurrence를 본다)
+    fillRecurrenceForm(editTarget.recurrence || '');
+
     delBtn.style.display = 'inline-block';   // 편집 시에만 "삭제" 버튼 보임
   } else {
     // ─── 신규 모드: 빈 폼 ───
@@ -924,6 +1297,10 @@ function openEventModal(event, defaultDate) {
     // 기본 저장 위치: Google 연결되면 google, 아니면 local
     document.getElementById('evSource').value = state.googleAuthenticated ? 'google' : 'local';
     document.getElementById('evMemo').value   = '';
+
+    // 🆕 v26.5.8a 반복 폼 초기화
+    fillRecurrenceForm('');
+
     delBtn.style.display = 'none';
   }
 
@@ -931,17 +1308,25 @@ function openEventModal(event, defaultDate) {
   updateEventCalendarDropdown(event);
 
   updateAlarmChips();         // 칩 disabled/active 상태 갱신
+  updateRecurrenceUiVisibility();   // 🆕 반복 종료 옵션 표시 상태 갱신
   bg.classList.add('show');   // 모달 표시
 
-  // 모달이 떠오른 직후 제목 입력칸에 자동 포커스
-  // 50ms 지연: 브라우저가 트랜지션을 끝낸 뒤 focus가 안 끊기게
-  setTimeout(() => document.getElementById('evTitle').focus(), 50);
+  // 🔧 v26.5.8a-fix1: native window focus를 먼저 강제한 뒤 element focus
+  // alwaysOnTop 위젯이 background 상태에서 모달을 열 때
+  // JS focus만으로는 키보드 입력이 안 들어오는 문제 해결.
+  setTimeout(async () => {
+    if (isElectron && window.electronAPI.focusWindow) {
+      try { await window.electronAPI.focusWindow(); } catch {}
+    }
+    document.getElementById('evTitle').focus();
+  }, 50);
 }
 
 /** 모달 닫고 편집 상태 초기화 */
 function closeEventModal() {
   document.getElementById('eventModalBg').classList.remove('show');
   state.editingEventId = null;
+  state.editingInstanceContext = null;   // 🆕 v26.5.8a
 }
 
 /**
@@ -1020,14 +1405,153 @@ function updateAlarmChips() {
 }
 
 /**
- * 모달의 "저장" 버튼 클릭 핸들러.
- * 신규/편집/source 변경을 모두 처리하는 핵심 로직.
+ * 🆕 v26.5.8a 반복 폼을 RRULE 문자열로부터 채움.
+ * @param {string} rruleStr  비어있으면 "반복 없음"으로
+ */
+function fillRecurrenceForm(rruleStr) {
+  const freq      = document.getElementById('evRecurrenceFreq');
+  const interval  = document.getElementById('evRecurrenceInterval');
+  const endType   = document.getElementById('evRecurrenceEndType');
+  const countInp  = document.getElementById('evRecurrenceCount');
+  const untilInp  = document.getElementById('evRecurrenceUntil');
+
+  const r = parseRrule(rruleStr);
+  if (!r) {
+    freq.value = '';
+    interval.value = 1;
+    endType.value = 'never';
+    countInp.value = 10;
+    untilInp.value = '';
+    return;
+  }
+  freq.value = r.freq;
+  interval.value = r.interval || 1;
+  if (r.count) {
+    endType.value = 'count';
+    countInp.value = r.count;
+    untilInp.value = '';
+  } else if (r.until) {
+    endType.value = 'until';
+    untilInp.value = r.until;
+    countInp.value = 10;
+  } else {
+    endType.value = 'never';
+    countInp.value = 10;
+    untilInp.value = '';
+  }
+}
+
+/**
+ * 🆕 v26.5.8a 모달의 반복 UI 표시 상태 갱신.
+ * - freq=빈값이면 interval/endRow 숨김
+ * - freq 있으면 interval 보임, endRow 보임
+ * - endType=count면 countInp 보임, until이면 untilInp 보임
+ * - hint 문구도 갱신
+ */
+function updateRecurrenceUiVisibility() {
+  const freq      = document.getElementById('evRecurrenceFreq').value;
+  const interval  = document.getElementById('evRecurrenceInterval');
+  const endRow    = document.getElementById('evRecurrenceEndRow');
+  const endType   = document.getElementById('evRecurrenceEndType').value;
+  const countInp  = document.getElementById('evRecurrenceCount');
+  const untilInp  = document.getElementById('evRecurrenceUntil');
+  const hint      = document.getElementById('evRecurrenceHint');
+
+  if (!freq) {
+    interval.style.display = 'none';
+    endRow.style.display = 'none';
+    hint.textContent = '';
+    return;
+  }
+  interval.style.display = '';
+  endRow.style.display = 'block';
+
+  countInp.style.display = endType === 'count' ? '' : 'none';
+  untilInp.style.display = endType === 'until' ? '' : 'none';
+
+  // 힌트 텍스트
+  const r = collectRecurrenceFromForm();
+  hint.textContent = r ? `→ ${describeRrule(r)}` : '';
+}
+
+/**
+ * 🆕 v26.5.8a 모달 폼 값을 RRULE 객체로 수집.
+ * @returns {object|null}  { freq, interval, count, until }, 반복 없으면 null
+ */
+function collectRecurrenceFromForm() {
+  const freq     = document.getElementById('evRecurrenceFreq').value;
+  if (!freq) return null;
+
+  const intervalRaw = parseInt(document.getElementById('evRecurrenceInterval').value, 10);
+  const interval = isNaN(intervalRaw) || intervalRaw < 1 ? 1 : Math.min(99, intervalRaw);
+
+  const endType = document.getElementById('evRecurrenceEndType').value;
+  const r = { freq, interval, count: null, until: null };
+
+  if (endType === 'count') {
+    const c = parseInt(document.getElementById('evRecurrenceCount').value, 10);
+    r.count = (isNaN(c) || c < 1) ? 1 : Math.min(999, c);
+  } else if (endType === 'until') {
+    const u = document.getElementById('evRecurrenceUntil').value;
+    if (u) r.until = u;   // YYYY-MM-DD
+  }
+  return r;
+}
+
+/**
+ * 🆕 v26.5.8a 폼에서 RRULE 문자열 직접 가져오기 (없으면 빈 문자열).
+ */
+function collectRecurrenceString() {
+  const r = collectRecurrenceFromForm();
+  return r ? buildRrule(r) : '';
+}
+
+/**
+ * 🆕 v26.5.8a "이 일정만 / 이후 모두 / 모두" 다이얼로그.
+ * Promise 반환: 'single' | 'future' | 'all' | 'cancel'
  *
- * 처리 순서:
- *  1) 입력값 검증 (제목 필수)
- *  2) 편집이면 기존 항목 찾기, source 변경 시 옛 원격 항목 삭제
- *  3) source에 따라 Google / NextCloud로 push (또는 로컬만)
- *  4) state.events 갱신 → 저장 → 화면 다시 그리기
+ * @param {string} mode  'edit' 또는 'delete' (제목/문구 변경용)
+ */
+function askRecurrenceScope(mode) {
+  return new Promise(resolve => {
+    const bg = document.getElementById('recScopeModalBg');
+    document.getElementById('recScopeTitle').textContent =
+      mode === 'delete' ? '반복 일정 삭제' : '반복 일정 수정';
+    document.getElementById('recScopeMsg').textContent =
+      mode === 'delete'
+        ? '이 반복 일정을 어떻게 삭제할까요?'
+        : '이 변경 사항을 어떻게 적용할까요?';
+
+    const handler = (ev) => {
+      const btn = ev.target.closest('.rec-scope-btn');
+      if (!btn) return;
+      const scope = btn.dataset.scope;
+      cleanup();
+      resolve(scope || 'cancel');
+    };
+    const bgClickHandler = (ev) => {
+      // 모달 외부 클릭 → 취소
+      if (ev.target === bg) {
+        cleanup();
+        resolve('cancel');
+      }
+    };
+    function cleanup() {
+      bg.classList.remove('show');
+      bg.removeEventListener('click', handler);
+      bg.removeEventListener('click', bgClickHandler);
+    }
+
+    bg.addEventListener('click', handler);
+    bg.addEventListener('click', bgClickHandler);
+    bg.classList.add('show');
+  });
+}
+
+
+/**
+ * 모달의 "저장" 버튼 클릭 핸들러.
+ * 신규/편집/source 변경/🆕 반복 시리즈 처리를 모두 다룸.
  */
 async function saveEvent() {
   const title = document.getElementById('evTitle').value.trim();
@@ -1054,6 +1578,13 @@ async function saveEvent() {
     data.ncCalendarUrl = calendarValue;
   }
 
+  // 🆕 v26.5.8a 폼에서 RRULE 수집 + 로컬만 허용
+  const formRrule = collectRecurrenceString();   // "" 또는 "FREQ=...;..."
+  if (formRrule && data.source !== 'local') {
+    toast('반복 일정은 현재 로컬에만 저장 가능합니다 (v26.5.8a)', 3500);
+    data.source = 'local';
+  }
+
   // 더블 클릭 방지 — 저장 진행 중에는 버튼 비활성화
   const saveBtn = document.getElementById('saveEvent');
   saveBtn.disabled = true;
@@ -1063,11 +1594,32 @@ async function saveEvent() {
       // ═══════════════════════════════════════════════
       // 편집 모드
       // ═══════════════════════════════════════════════
+
+      // 🆕 v26.5.8a 반복 인스턴스 편집은 별도 분기 (스코프 다이얼로그)
+      const ctx = state.editingInstanceContext;
+      if (ctx) {
+        const handled = await saveRecurrenceEdit(ctx, data, formRrule);
+        if (!handled) { saveBtn.disabled = false; return; }
+        await saveEvents();
+        closeEventModal();
+        renderCalendar();
+        return;
+      }
+
       const idx = state.events.findIndex(e => e.id === state.editingEventId);
       if (idx < 0) return;
 
       const old = state.events[idx];
       let merged = { ...old, ...data };   // 기존 + 새 입력
+
+      // 🆕 v26.5.8a 일반 일정 → 마스터로 승격, 또는 마스터 → 일반 변환
+      if (formRrule && data.source === 'local') {
+        merged.recurrence = formRrule;
+        if (!merged.exdates) merged.exdates = [];
+      } else {
+        delete merged.recurrence;
+        delete merged.exdates;
+      }
 
       // ── source 가 바뀐 경우: 이전 원격 일정 삭제 ──
       // 예) Google → NextCloud 로 옮기면 Google에서 지우고, 새로 NextCloud에 넣음
@@ -1105,6 +1657,12 @@ async function saveEvent() {
       // ═══════════════════════════════════════════════
       let newEvent = { id: uid(), ...data };
 
+      // 🆕 v26.5.8a 새 마스터 (RRULE 있을 때만, 로컬만)
+      if (formRrule && data.source === 'local') {
+        newEvent.recurrence = formRrule;
+        newEvent.exdates = [];
+      }
+
       if (data.source === 'google' && isElectron && state.googleAuthenticated) {
         toast('Google에 동기화 중...');
         const r = await window.electronAPI.pushGoogleEvent(newEvent);
@@ -1125,7 +1683,7 @@ async function saveEvent() {
       }
 
       state.events.push(newEvent);
-      toast('추가되었습니다');
+      toast(formRrule ? '반복 일정이 추가되었습니다' : '추가되었습니다');
     }
 
     // 저장 + 모달 닫기 + 다시 그리기 (saveEvents 안에서 알람 재스케줄까지 함)
@@ -1139,12 +1697,200 @@ async function saveEvent() {
   }
 }
 
+
+/**
+ * 🆕 v26.5.8a 반복 인스턴스 편집 처리.
+ * "이 일정만 / 이후 모두 / 모두" 다이얼로그를 띄워 사용자 결정에 따라 분기.
+ *
+ * @param {object} ctx       state.editingInstanceContext
+ *                           { masterId, instanceDate, isVirtual }
+ * @param {object} formData  폼 입력 데이터
+ *                           { title, date, time, source, memo, alarms, ... }
+ * @param {string} formRrule 폼에서 수집한 RRULE 문자열 (빈 문자열 가능)
+ * @returns {Promise<boolean>}  true=처리 완료, false=사용자 취소
+ */
+async function saveRecurrenceEdit(ctx, formData, formRrule) {
+  const scope = await askRecurrenceScope('edit');
+  if (scope === 'cancel') return false;
+
+  const masterIdx = state.events.findIndex(e => e.id === ctx.masterId);
+  if (masterIdx < 0) {
+    toast('마스터 일정을 찾을 수 없습니다');
+    return false;
+  }
+  const master = state.events[masterIdx];
+
+  // ─────────────────────────────────────────────────────
+  // "이 일정만" — 이 인스턴스만 분리
+  // ─────────────────────────────────────────────────────
+  if (scope === 'single') {
+    // 마스터 exdates에 인스턴스 날짜 추가 (중복 제거)
+    const exdates = Array.from(new Set([...(master.exdates || []), ctx.instanceDate]));
+    state.events[masterIdx] = { ...master, exdates };
+
+    if (ctx.isVirtual) {
+      // 가상 인스턴스 → 새 분리 인스턴스 생성
+      const detached = {
+        id: uid(),
+        title: formData.title,
+        date: formData.date,
+        time: formData.time,
+        source: 'local',
+        memo: formData.memo,
+        alarms: formData.alarms,
+        recurrenceId: master.id,
+        originalStart: ctx.instanceDate
+      };
+      state.events.push(detached);
+    } else {
+      // 이미 분리된 인스턴스 → 폼 값으로 자체 갱신
+      const idx = state.events.findIndex(e => e.id === state.editingEventId);
+      if (idx >= 0) {
+        state.events[idx] = {
+          ...state.events[idx],
+          title: formData.title,
+          date: formData.date,
+          time: formData.time,
+          memo: formData.memo,
+          alarms: formData.alarms,
+          source: 'local'
+          // recurrenceId/originalStart 그대로 유지
+        };
+      }
+    }
+    toast('이 일정만 수정되었습니다');
+    return true;
+  }
+
+  // ─────────────────────────────────────────────────────
+  // "이후 모두" — 마스터를 인스턴스 직전까지 끊고 새 마스터 생성
+  // ─────────────────────────────────────────────────────
+  if (scope === 'future') {
+    const oldRrule = parseRrule(master.recurrence);
+    if (oldRrule) {
+      const cutoff = dateMinusOne(ctx.instanceDate);
+      // UNTIL 적용, 기존 COUNT는 제거 (둘 중 하나만 가능)
+      oldRrule.until = cutoff;
+      oldRrule.count = null;
+      if (cutoff < master.date) {
+        // 마스터 시작일조차 이후 시리즈에 들어가버림 → 마스터 자체 삭제
+        state.events.splice(masterIdx, 1);
+      } else {
+        state.events[masterIdx] = { ...master, recurrence: buildRrule(oldRrule) };
+      }
+    }
+
+    // 새 마스터 생성 (폼의 RRULE 우선, 없으면 원본 RRULE)
+    const newRrule = formRrule || master.recurrence || '';
+    const newMaster = {
+      id: uid(),
+      title: formData.title,
+      date: formData.date,
+      time: formData.time,
+      source: 'local',
+      memo: formData.memo,
+      alarms: formData.alarms,
+      recurrence: newRrule,
+      exdates: []
+    };
+    state.events.push(newMaster);
+    toast('이 날짜부터의 일정이 변경되었습니다');
+    return true;
+  }
+
+  // ─────────────────────────────────────────────────────
+  // "모두" — 마스터 자체를 폼 값으로 수정 (분리 인스턴스는 그대로)
+  // ─────────────────────────────────────────────────────
+  if (scope === 'all') {
+    const updated = {
+      ...master,
+      title: formData.title,
+      date: formData.date,
+      time: formData.time,
+      source: 'local',
+      memo: formData.memo,
+      alarms: formData.alarms,
+      recurrence: formRrule || master.recurrence,
+      exdates: master.exdates || []
+    };
+    // 폼에서 RRULE을 비우면 단일 일정으로 변환
+    if (!updated.recurrence) {
+      delete updated.recurrence;
+      delete updated.exdates;
+    }
+    state.events[masterIdx] = updated;
+    toast('시리즈 전체가 수정되었습니다');
+    return true;
+  }
+
+  return false;
+}
+
+
 /**
  * 모달의 "삭제" 버튼.
- * 원격 일정이면 서버에서도 같이 지움.
+ * - 일반 일정: 기존 로직 (원격이면 서버에서도 삭제)
+ * - 🆕 v26.5.8a 반복 시리즈 인스턴스: 스코프 다이얼로그
  */
 async function deleteEvent() {
   if (!state.editingEventId) return;
+
+  // 🆕 v26.5.8a 반복 인스턴스 삭제 분기
+  const ctx = state.editingInstanceContext;
+  if (ctx) {
+    const scope = await askRecurrenceScope('delete');
+    if (scope === 'cancel') return;
+
+    const masterIdx = state.events.findIndex(e => e.id === ctx.masterId);
+    if (masterIdx < 0) {
+      toast('마스터 일정을 찾을 수 없습니다');
+      return;
+    }
+    const master = state.events[masterIdx];
+
+    if (scope === 'single') {
+      // 마스터 exdates에 추가
+      const exdates = Array.from(new Set([...(master.exdates || []), ctx.instanceDate]));
+      state.events[masterIdx] = { ...master, exdates };
+      // 분리된 인스턴스를 클릭한 상태였다면 그 인스턴스 자체도 제거
+      if (!ctx.isVirtual) {
+        state.events = state.events.filter(e => e.id !== state.editingEventId);
+      }
+      toast('이 일정만 삭제되었습니다');
+    } else if (scope === 'future') {
+      const oldRrule = parseRrule(master.recurrence);
+      if (oldRrule) {
+        const cutoff = dateMinusOne(ctx.instanceDate);
+        oldRrule.until = cutoff;
+        oldRrule.count = null;
+        if (cutoff < master.date) {
+          state.events.splice(masterIdx, 1);
+        } else {
+          state.events[masterIdx] = { ...master, recurrence: buildRrule(oldRrule) };
+        }
+      }
+      // 이 인스턴스 이후로 분리된 인스턴스들도 정리
+      state.events = state.events.filter(e => {
+        if (e.recurrenceId !== master.id) return true;
+        // originalStart >= ctx.instanceDate 이면 같이 제거
+        return (e.originalStart || e.date) < ctx.instanceDate;
+      });
+      toast('이 날짜부터의 일정이 삭제되었습니다');
+    } else if (scope === 'all') {
+      // 마스터 + 모든 분리 인스턴스 제거
+      state.events = state.events.filter(e =>
+        e.id !== master.id && e.recurrenceId !== master.id
+      );
+      toast('시리즈 전체가 삭제되었습니다');
+    }
+
+    await saveEvents();
+    closeEventModal();
+    renderCalendar();
+    return;
+  }
+
+  // ── 일반 단일 일정 삭제 (기존 로직) ──
   if (!confirm('이 일정을 삭제하시겠습니까?')) return;
 
   const ev = state.events.find(e => e.id === state.editingEventId);
@@ -1153,7 +1899,6 @@ async function deleteEvent() {
   if (ev && isElectron) {
     if (ev.source === 'google' && ev.googleId) {
       toast('Google에서 삭제 중...');
-      // 🆕 객체 전체 전달 (deleteEvent가 googleCalendarId 사용)
       const r = await window.electronAPI.deleteGoogleEvent(ev);
       if (!r.ok) toast('Google 삭제 실패: ' + r.error, 3500);
     } else if (ev.source === 'nextcloud' && ev.ncUrl) {
@@ -1884,6 +2629,17 @@ document.querySelectorAll('.alarm-chip').forEach(chip => {
   });
 });
 
+// 🆕 v26.5.8a 반복 폼 이벤트 리스너
+// freq 변경 → end row 표시/숨김 + hint 갱신
+document.getElementById('evRecurrenceFreq').addEventListener('change', updateRecurrenceUiVisibility);
+// interval 입력 → hint 갱신
+document.getElementById('evRecurrenceInterval').addEventListener('input', updateRecurrenceUiVisibility);
+// endType 변경 → count/until input 표시/숨김 + hint 갱신
+document.getElementById('evRecurrenceEndType').addEventListener('change', updateRecurrenceUiVisibility);
+// count/until 입력 → hint 갱신
+document.getElementById('evRecurrenceCount').addEventListener('input', updateRecurrenceUiVisibility);
+document.getElementById('evRecurrenceUntil').addEventListener('change', updateRecurrenceUiVisibility);
+
 
 // ─── 메모 입력창 ───
 // Enter 누르면 메모 추가
@@ -2224,17 +2980,6 @@ const ncStep2   = document.getElementById('ncStep2');
 
 /** NextCloud 모달 열기. step1=서버 입력, step2=캘린더 선택 */
 function openNcModal(step1 = true) {
-  // 🆕 v26.5.7-fix2: 입력 필드를 강제로 활성 상태로 리셋
-  //   (직전 confirm() 다이얼로그·이전 모달의 잔존 포커스로 input이 응답 안 하는 버그 방지)
-  ['ncServer', 'ncUser', 'ncPass'].forEach(id => {
-    const el = document.getElementById(id);
-    if (!el) return;
-    el.disabled = false;
-    el.readOnly = false;
-    el.removeAttribute('disabled');
-    el.removeAttribute('readonly');
-  });
-
   ncStep1.style.display = step1 ? 'block' : 'none';
   ncStep2.style.display = step1 ? 'none'  : 'block';
   ncModalBg.classList.add('show');
@@ -2245,10 +2990,6 @@ function openNcModal(step1 = true) {
  *  관리 모달이 안 닫힌 채로 step1을 열면 z-index 충돌로 입력이 막히는 버그 방지.
  *  - 모든 NextCloud/Google 캘린더 관련 모달의 .show 클래스 제거
  *  - draft 상태도 같이 비움 (이전 선택 잔존 방지)
- *  🆕 v26.5.7-fix2 추가:
- *  - active element blur (직전 confirm()·관리 모달의 잔존 포커스 제거)
- *  - step1/step2 display 상태 명시적 리셋 (직전 step2 종료 후 재오픈 시 꼬임 방지)
- *  - eventModalBg도 정리
  */
 function closeAllCalendarModals() {
   // NextCloud
@@ -2258,20 +2999,6 @@ function closeAllCalendarModals() {
   // Google
   document.getElementById('gcalModalBg')?.classList.remove('show');
   gcalDraft = [];
-  // 🆕 v26.5.7-fix2: 일정 모달도 닫음 (혹시 떠있을 때 같이 클린업)
-  document.getElementById('eventModalBg')?.classList.remove('show');
-
-  // 🆕 v26.5.7-fix2: 직전 포커스 강제 해제
-  //   confirm() 후 native dialog에서 돌아온 포커스가 이상한 곳에 머물러서
-  //   input이 클릭/타이핑을 못 받는 케이스 방지
-  if (document.activeElement && typeof document.activeElement.blur === 'function') {
-    document.activeElement.blur();
-  }
-
-  // 🆕 v26.5.7-fix2: step1/step2 display 명시적 초기 상태로
-  //   직전에 step2가 표시된 채 닫혔다면 다음에 openNcModal(true) 불러도 잔재가 남을 수 있어서
-  if (typeof ncStep1 !== 'undefined' && ncStep1) ncStep1.style.display = 'block';
-  if (typeof ncStep2 !== 'undefined' && ncStep2) ncStep2.style.display = 'none';
 }
 
 /** NextCloud 모달 닫기. 비밀번호 필드는 보안상 매번 비움 */
@@ -2298,7 +3025,6 @@ document.getElementById('nextcloudAuthBtn').addEventListener('click', async (e) 
   if (!isElectron) { toast('Electron 환경에서만 동작합니다'); return; }
 
   // 🆕 v26.5.7-fix: 다른 모달 정리 (z-index 충돌 방지)
-  // 🆕 v26.5.7-fix2: + 포커스 해제 + step1/step2 display 리셋도 같이 처리됨
   closeAllCalendarModals();
 
   const status = await window.electronAPI.authNextcloudStatus();
@@ -2310,17 +3036,7 @@ document.getElementById('nextcloudAuthBtn').addEventListener('click', async (e) 
     document.getElementById('ncUser').value = '';
     document.getElementById('ncPass').value = '';
     openNcModal(true);
-    // 🆕 v26.5.7-fix2: 모달 fade-in 끝난 다음에 포커스
-    //   기존 50ms는 transparent window 환경에서 가끔 짧음
-    //   double rAF로 다음 프레임 보장 + 100ms 여유
-    requestAnimationFrame(() => {
-      requestAnimationFrame(() => {
-        setTimeout(() => {
-          const srv = document.getElementById('ncServer');
-          if (srv) srv.focus();
-        }, 100);
-      });
-    });
+    setTimeout(() => document.getElementById('ncServer').focus(), 50);
   }
 });
 
@@ -2365,11 +3081,9 @@ let ncStep2Draft = [];
 
 function initNcStep2Draft(calendars) {
   // 첫 가입이라 모두 미체크. 첫 번째에 별 표시 (사용자가 바꿀 수 있음)
-  // 🆕 v26.5.7-fix2: 서버에서 받은 calendar-color (c.color)를 그대로 끌고 감
   ncStep2Draft = calendars.map((c, i) => ({
     url: c.url,
     displayName: c.displayName,
-    color: c.color || null,         // 🆕 서버 원본색 (없으면 null)
     _checked: false,
     isPrimary: false
   }));
@@ -2385,7 +3099,7 @@ function renderNcCalendarsMulti() {
   list.innerHTML = ncStep2Draft.map((c, i) => `
     <div class="cal-select-item" data-idx="${i}">
       <input type="checkbox" class="cal-check" ${c._checked ? 'checked' : ''}>
-      <span class="cal-color-dot" style="background:${escapeHtml(c.color || '#0082c9')}"></span>
+      <span class="cal-color-dot" style="background:#0082c9"></span>
       <span class="cal-name">${escapeHtml(calDisplayName(c, 'nextcloud'))}</span>
       <button class="cal-star ${c.isPrimary ? 'active' : ''}" title="기본 캘린더로 지정">
         ${c.isPrimary ? '⭐' : '☆'}
@@ -2426,18 +3140,11 @@ function renderNcCalendarsMulti() {
 
 // ─── step2의 "완료" 버튼 ───
 document.getElementById('ncSelectDone').addEventListener('click', async () => {
-  // 🆕 v26.5.7-fix2: customColor/originalColor를 서버 원본색으로 채워서 저장
-  //   기존엔 색상 필드를 빼먹어서 첫 연결 시 모든 NC 일정이 브랜드색(#0082c9)으로 표시되던 버그
-  const picked = ncStep2Draft.filter(c => c._checked).map(c => {
-    const baseColor = c.color || '#0082c9';
-    return {
-      url: c.url,
-      displayName: calDisplayName(c, 'nextcloud'),  // 🆕 빈 이름 방지
-      originalColor: baseColor,    // 🆕 서버에서 받아온 원본색 (↺ 리셋용)
-      customColor: baseColor,      // 🆕 처음엔 원본과 동일
-      isPrimary: c.isPrimary
-    };
-  });
+  const picked = ncStep2Draft.filter(c => c._checked).map(c => ({
+    url: c.url,
+    displayName: calDisplayName(c, 'nextcloud'),  // 🆕 빈 이름 방지
+    isPrimary: c.isPrimary
+  }));
 
   if (picked.length === 0) { toast('최소 한 개 이상 선택하세요'); return; }
 
@@ -2619,10 +3326,115 @@ document.getElementById('ncManageSave').addEventListener('click', async () => {
   }
 });
 
-// 🆕 v26.5.7-fix2: 여기 있던 closeNcManageModal/renderNcManageList/ncManageModalBg 클릭/ncManageCancel/ncManageSave 핸들러의 "두 번째 복붙 블록"을 제거함.
-// 라인 2622~2730에 같은 코드가 한 번 더 있어서 ncManageSave 클릭 시 IPC 레이스 + 토스트 이중 발생 + 색상(originalColor) 누락 등 부작용이 있었음.
-// 위쪽 블록(첫 번째 정의)이 originalColor도 살리고 sameSelection 최적화도 있어서 이게 정상.
+function closeNcManageModal() {
+  ncManageModalBg.classList.remove('show');
+  ncManageDraft = [];
+}
 
+function renderNcManageList(listError) {
+  const list = document.getElementById('ncManageList');
+
+  let errorBox = '';
+  if (listError) {
+    errorBox = `
+      <div class="cal-select-error">
+        ⚠ 캘린더 목록을 가져올 수 없습니다.<br>
+        <small>${escapeHtml(listError)}</small><br>
+        <small style="opacity:0.8">서버가 응답하지 않거나 비밀번호가 만료됐을 수 있습니다. 아래 <b>연결 해제</b> 후 다시 연결해보세요.</small>
+      </div>
+    `;
+  }
+
+  if (ncManageDraft.length === 0) {
+    list.innerHTML = errorBox + '<div class="cal-select-empty">사용 가능한 캘린더가 없습니다</div>';
+    return;
+  }
+
+  list.innerHTML = errorBox + ncManageDraft.map((c, i) => `
+    <div class="cal-select-item" data-idx="${i}">
+      <input type="checkbox" class="cal-check" ${c._checked ? 'checked' : ''}>
+      <input type="color" class="cal-color-input" value="${escapeHtml(c.customColor)}" title="클릭하여 색상 변경">
+      <span class="cal-name">${escapeHtml(calDisplayName(c, 'nextcloud'))}</span>
+      <button class="cal-color-reset" title="기본 색상(#0082c9)으로 복원">↺</button>
+      <button class="cal-star ${c.isPrimary ? 'active' : ''}" title="기본 캘린더로 지정">
+        ${c.isPrimary ? '⭐' : '☆'}
+      </button>
+    </div>
+  `).join('');
+
+  list.querySelectorAll('.cal-check').forEach(cb => {
+    cb.addEventListener('change', () => {
+      const i = parseInt(cb.closest('.cal-select-item').dataset.idx, 10);
+      ncManageDraft[i]._checked = cb.checked;
+      if (!cb.checked && ncManageDraft[i].isPrimary) {
+        ncManageDraft[i].isPrimary = false;
+        const next = ncManageDraft.find(x => x._checked);
+        if (next) next.isPrimary = true;
+      }
+      renderNcManageList(listError);
+    });
+  });
+
+  // 🆕 색상 input
+  list.querySelectorAll('.cal-color-input').forEach(inp => {
+    inp.addEventListener('input', () => {
+      const i = parseInt(inp.closest('.cal-select-item').dataset.idx, 10);
+      ncManageDraft[i].customColor = inp.value;
+    });
+  });
+
+  // 🆕 색상 리셋
+  list.querySelectorAll('.cal-color-reset').forEach(btn => {
+    btn.addEventListener('click', e => {
+      e.stopPropagation();
+      const i = parseInt(btn.closest('.cal-select-item').dataset.idx, 10);
+      ncManageDraft[i].customColor = '#0082c9';
+      renderNcManageList(listError);
+    });
+  });
+
+  list.querySelectorAll('.cal-star').forEach(star => {
+    star.addEventListener('click', e => {
+      e.stopPropagation();
+      const i = parseInt(star.closest('.cal-select-item').dataset.idx, 10);
+      if (!ncManageDraft[i]._checked) { toast('먼저 체크해주세요'); return; }
+      ncManageDraft.forEach(x => x.isPrimary = false);
+      ncManageDraft[i].isPrimary = true;
+      renderNcManageList(listError);
+    });
+  });
+}
+
+ncManageModalBg.addEventListener('click', e => {
+  if (e.target.id === 'ncManageModalBg') closeNcManageModal();
+});
+document.getElementById('ncManageCancel').addEventListener('click', closeNcManageModal);
+
+document.getElementById('ncManageSave').addEventListener('click', async () => {
+  const picked = ncManageDraft.filter(c => c._checked).map(c => ({
+    url: c.url,
+    displayName: calDisplayName(c, 'nextcloud'),
+    customColor: c.customColor,    // 🆕
+    isPrimary: c.isPrimary
+  }));
+
+  if (picked.length === 0) {
+    if (!confirm('선택된 캘린더가 없습니다. 모든 NextCloud 일정이 화면에서 사라집니다. 계속할까요?')) return;
+  }
+
+  await window.electronAPI.nextcloudSetSelectedCalendars(picked);
+  closeNcManageModal();
+  await refreshNextcloudAuthStatus();
+  toast(`NextCloud 캘린더 ${picked.length}개 저장됨`);
+
+  // 🆕 색상만 바뀌었을 경우에도 즉시 반영
+  renderCalendar();
+
+  state.events = state.events.filter(e => e.source !== 'nextcloud');
+  await saveEvents();
+  renderCalendar();
+  setTimeout(() => syncFromNextcloud(), 300);
+});
 
 document.getElementById('ncManageRevoke').addEventListener('click', async () => {
   if (!confirm('NextCloud 연결을 해제하시겠습니까?\n가져온 NextCloud 일정도 함께 제거됩니다.')) return;
@@ -2634,11 +3446,6 @@ document.getElementById('ncManageRevoke').addEventListener('click', async () => 
     saveSyncedRange();
     await saveEvents();
     closeNcManageModal();
-    // 🆕 v26.5.7-fix2: 직전 confirm() / 관리 모달의 잔존 포커스 떼기.
-    //   안 떼면 곧바로 "연결" 버튼을 누를 때 step1 input이 죽은 상태로 뜨는 케이스 있음
-    if (document.activeElement && typeof document.activeElement.blur === 'function') {
-      document.activeElement.blur();
-    }
     renderCalendar();
     toast('NextCloud 연결 해제됨');
   } catch (err) {
