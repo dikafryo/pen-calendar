@@ -27,61 +27,171 @@ function urlKey(url) {
 }
 
 // ─────────────────────────────────────────────
-// ICS → 로컬
+// 🆕 v26.5.8b 헬퍼: ICAL.Time → "YYYY-MM-DD" (시간/타임존 무시)
+//   - EXDATE/RECURRENCE-ID 값에서 날짜 부분만 뽑아 app.js의
+//     exdates / originalStart 모델("YYYY-MM-DD")과 맞춤.
 // ─────────────────────────────────────────────
-function icsToLocal(rawIcs, url, etag, calendarUrl) {
+function icalTimeToDateStr(t) {
+  if (!t) return '';
+  if (typeof t === 'string') {
+    // 안전망: "20260514T140000Z" 같은 raw 문자열도 처리
+    const m = /^(\d{4})-?(\d{2})-?(\d{2})/.exec(t);
+    return m ? `${m[1]}-${m[2]}-${m[3]}` : '';
+  }
+  if (t.year && t.month && t.day) {
+    return `${t.year}-${pad2(t.month)}-${pad2(t.day)}`;
+  }
+  try {
+    const js = t.toJSDate();
+    return formatDate(js);
+  } catch {
+    return '';
+  }
+}
+
+// ─────────────────────────────────────────────
+// 🆕 v26.5.8b 단일 VEVENT → local 객체 (마스터/분리 인스턴스 공통 변환)
+//   - RRULE → local.recurrence (문자열)
+//   - EXDATE → local.exdates (["YYYY-MM-DD", ...])
+//   - 분리 인스턴스(RECURRENCE-ID 있음)의 식별/연결은 호출자(icsToLocals)에서 처리
+// ─────────────────────────────────────────────
+function veventToLocal(vevent, url, etag, calendarUrl, idPrefix) {
+  const event = new ICAL.Event(vevent);
+  if (!event.startDate) return null;
+
+  let date, time = '';
+  if (event.startDate.isDate) {
+    date = `${event.startDate.year}-${pad2(event.startDate.month)}-${pad2(event.startDate.day)}`;
+  } else {
+    const js = event.startDate.toJSDate();
+    date = formatDate(js); time = formatTime(js);
+  }
+
+  const alarmSet = new Set();
+  vevent.getAllSubcomponents('valarm').forEach(va => {
+    const trig = va.getFirstPropertyValue('trigger');
+    if (!trig) return;
+    let minutes = null;
+    if (trig.toSeconds) minutes = Math.abs(Math.round(trig.toSeconds() / 60));
+    else if (typeof trig === 'string') {
+      const m = /-?P(?:T)?(\d+)([MHD])/i.exec(trig);
+      if (m) {
+        const n = parseInt(m[1], 10);
+        const u = m[2].toUpperCase();
+        minutes = u === 'M' ? n : u === 'H' ? n * 60 : n * 1440;
+      }
+    }
+    if (minutes === 5) alarmSet.add('5min');
+    else if (minutes === 30) alarmSet.add('30min');
+    else if (minutes === 1440) alarmSet.add('1day');
+  });
+
+  // 🆕 v26.5.8b RRULE — ICAL.Recur → "FREQ=WEEKLY;INTERVAL=1;COUNT=10" 형태
+  let recurrence = '';
+  const rruleVal = vevent.getFirstPropertyValue('rrule');
+  if (rruleVal) {
+    // ICAL.Recur.toString() = "FREQ=WEEKLY;..." (RRULE: 접두사 없음)
+    // 안전하게 접두사 제거 (env에 따라 붙는 케이스 방지)
+    recurrence = String(rruleVal).replace(/^RRULE:/i, '').trim();
+  }
+
+  // 🆕 v26.5.8b EXDATE — 여러 줄 + 한 줄 콤마구분 모두 처리
+  const exdates = [];
+  vevent.getAllProperties('exdate').forEach(prop => {
+    const values = (typeof prop.getValues === 'function')
+      ? prop.getValues()
+      : [prop.getFirstValue()];
+    values.forEach(v => {
+      const ds = icalTimeToDateStr(v);
+      if (ds) exdates.push(ds);
+    });
+  });
+
+  const local = {
+    id: idPrefix + event.uid,
+    ncUid: event.uid,
+    ncUrl: url,
+    ncEtag: etag,
+    ncCalendarUrl: calendarUrl,
+    title: event.summary || '(제목 없음)',
+    date, time,
+    source: 'nextcloud',
+    alarms: [...alarmSet],
+    memo: event.description || ''
+  };
+  if (recurrence) local.recurrence = recurrence;
+  if (exdates.length > 0) local.exdates = exdates;
+  return local;
+}
+
+// ─────────────────────────────────────────────
+// ICS → 로컬 (배열 반환 — 마스터 + 분리 인스턴스들)
+//
+// 🆕 v26.5.8b 변경:
+//   - 한 ICS 안에 여러 VEVENT(마스터 1 + RECURRENCE-ID 가진 분리 인스턴스 N) 가능
+//   - 마스터: RECURRENCE-ID 없는 VEVENT → app.js 모델의 id = nc_<hash>_<uid>
+//   - 분리 인스턴스: RECURRENCE-ID 있는 VEVENT
+//       → id = master.id + "@" + originalStart
+//       → recurrenceId = master.id
+//       → originalStart = "YYYY-MM-DD" (RECURRENCE-ID 의 날짜 부분)
+//       → recurrence/exdates 는 분리 인스턴스에서 무시
+// ─────────────────────────────────────────────
+function icsToLocals(rawIcs, url, etag, calendarUrl) {
   try {
     const jcal = ICAL.parse(rawIcs);
     const vcal = new ICAL.Component(jcal);
-    const vevent = vcal.getFirstSubcomponent('vevent');
-    if (!vevent) return null;
+    const vevents = vcal.getAllSubcomponents('vevent') || [];
+    if (vevents.length === 0) return [];
 
-    const event = new ICAL.Event(vevent);
-    if (!event.startDate) return null;
+    const idPrefix = 'nc_' + Buffer.from(calendarUrl).toString('base64').slice(0, 12) + '_';
 
-    let date, time = '';
-    if (event.startDate.isDate) {
-      date = `${event.startDate.year}-${pad2(event.startDate.month)}-${pad2(event.startDate.day)}`;
-    } else {
-      const js = event.startDate.toJSDate();
-      date = formatDate(js); time = formatTime(js);
+    // 마스터 vs 분리 인스턴스 분리
+    let masterVevent = null;
+    const detachedVevents = [];
+    for (const ve of vevents) {
+      if (ve.getFirstPropertyValue('recurrence-id')) {
+        detachedVevents.push(ve);
+      } else {
+        masterVevent = ve; // 보통 1개 — 여러 개면 마지막 유효본 사용
+      }
+    }
+    // 마스터가 없는 경우 (외부 캘린더에서 분리 인스턴스만 노출되는 드문 케이스):
+    // 첫 vevent를 마스터로 fallback
+    if (!masterVevent && detachedVevents.length > 0) {
+      masterVevent = detachedVevents.shift();
     }
 
-    const alarmSet = new Set();
-    vevent.getAllSubcomponents('valarm').forEach(va => {
-      const trig = va.getFirstPropertyValue('trigger');
-      if (!trig) return;
-      let minutes = null;
-      if (trig.toSeconds) minutes = Math.abs(Math.round(trig.toSeconds() / 60));
-      else if (typeof trig === 'string') {
-        const m = /-?P(?:T)?(\d+)([MHD])/i.exec(trig);
-        if (m) {
-          const n = parseInt(m[1], 10);
-          const u = m[2].toUpperCase();
-          minutes = u === 'M' ? n : u === 'H' ? n * 60 : n * 1440;
-        }
-      }
-      if (minutes === 5) alarmSet.add('5min');
-      else if (minutes === 30) alarmSet.add('30min');
-      else if (minutes === 1440) alarmSet.add('1day');
-    });
+    const results = [];
+    const master = masterVevent
+      ? veventToLocal(masterVevent, url, etag, calendarUrl, idPrefix)
+      : null;
+    if (master) results.push(master);
 
-    return {
-      // calendarUrl을 id에 반영해서 같은 uid가 다른 캘린더에 있을 가능성도 안전하게
-      id: 'nc_' + Buffer.from(calendarUrl).toString('base64').slice(0, 12) + '_' + event.uid,
-      ncUid: event.uid,
-      ncUrl: url,
-      ncEtag: etag,
-      ncCalendarUrl: calendarUrl,    // 🆕 이 일정이 속한 캘린더
-      title: event.summary || '(제목 없음)',
-      date, time,
-      source: 'nextcloud',
-      alarms: [...alarmSet],
-      memo: event.description || ''
-    };
+    if (master) {
+      for (const ve of detachedVevents) {
+        const recIdProp = ve.getFirstProperty('recurrence-id');
+        if (!recIdProp) continue;
+        const recIdValue = recIdProp.getFirstValue();
+        const originalStart = icalTimeToDateStr(recIdValue);
+        if (!originalStart) continue;
+
+        const inst = veventToLocal(ve, url, etag, calendarUrl, idPrefix);
+        if (!inst) continue;
+
+        inst.id = master.id + '@' + originalStart;
+        inst.recurrenceId = master.id;
+        inst.originalStart = originalStart;
+        // 분리 인스턴스에 RRULE/EXDATE가 있어도 의미 없음 — 정리
+        delete inst.recurrence;
+        delete inst.exdates;
+        results.push(inst);
+      }
+    }
+
+    return results;
   } catch (err) {
     console.error('[nc] ICS 파싱 실패:', err.message);
-    return null;
+    return [];
   }
 }
 
@@ -168,11 +278,16 @@ async function syncOne(client, allDavCalendars, calendarUrl) {
   const seen = new Set();
 
   for (const o of objects) {
-    const local = icsToLocal(o.data, o.url, o.etag, calendarUrl);
-    if (!local) continue;
-    seen.add(local.ncUid);
-    newMap[local.ncUid] = { url: o.url, etag: o.etag };
-    events.push(local);
+    // 🆕 v26.5.8b: 한 ICS 객체가 마스터 + 분리 인스턴스 N개를 포함할 수 있음
+    const locals = icsToLocals(o.data, o.url, o.etag, calendarUrl);
+    if (locals.length === 0) continue;
+    // etagMap은 UID 기준 1개 (분리 인스턴스도 같은 ICS URL/etag 공유)
+    const masterUid = locals[0].ncUid;
+    seen.add(masterUid);
+    newMap[masterUid] = { url: o.url, etag: o.etag };
+    for (const local of locals) {
+      events.push(local);
+    }
   }
 
   const key = urlKey(calendarUrl);
@@ -359,8 +474,8 @@ async function fetchRange(startISO, endISO) {
         timeRange: { start: startISO, end: endISO }
       });
       (objects || []).forEach(o => {
-        const local = icsToLocal(o.data, o.url, o.etag, cal.url);
-        if (local) allEvents.push(local);
+        const locals = icsToLocals(o.data, o.url, o.etag, cal.url);
+        locals.forEach(l => allEvents.push(l));
       });
     } catch (err) {
       console.error(`[nc-cal] fetchRange ${cal.displayName} 실패:`, err.message);
