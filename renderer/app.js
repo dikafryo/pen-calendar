@@ -2224,6 +2224,17 @@ const ncStep2   = document.getElementById('ncStep2');
 
 /** NextCloud 모달 열기. step1=서버 입력, step2=캘린더 선택 */
 function openNcModal(step1 = true) {
+  // 🆕 v26.5.7-fix2: 입력 필드를 강제로 활성 상태로 리셋
+  //   (직전 confirm() 다이얼로그·이전 모달의 잔존 포커스로 input이 응답 안 하는 버그 방지)
+  ['ncServer', 'ncUser', 'ncPass'].forEach(id => {
+    const el = document.getElementById(id);
+    if (!el) return;
+    el.disabled = false;
+    el.readOnly = false;
+    el.removeAttribute('disabled');
+    el.removeAttribute('readonly');
+  });
+
   ncStep1.style.display = step1 ? 'block' : 'none';
   ncStep2.style.display = step1 ? 'none'  : 'block';
   ncModalBg.classList.add('show');
@@ -2234,6 +2245,10 @@ function openNcModal(step1 = true) {
  *  관리 모달이 안 닫힌 채로 step1을 열면 z-index 충돌로 입력이 막히는 버그 방지.
  *  - 모든 NextCloud/Google 캘린더 관련 모달의 .show 클래스 제거
  *  - draft 상태도 같이 비움 (이전 선택 잔존 방지)
+ *  🆕 v26.5.7-fix2 추가:
+ *  - active element blur (직전 confirm()·관리 모달의 잔존 포커스 제거)
+ *  - step1/step2 display 상태 명시적 리셋 (직전 step2 종료 후 재오픈 시 꼬임 방지)
+ *  - eventModalBg도 정리
  */
 function closeAllCalendarModals() {
   // NextCloud
@@ -2243,6 +2258,20 @@ function closeAllCalendarModals() {
   // Google
   document.getElementById('gcalModalBg')?.classList.remove('show');
   gcalDraft = [];
+  // 🆕 v26.5.7-fix2: 일정 모달도 닫음 (혹시 떠있을 때 같이 클린업)
+  document.getElementById('eventModalBg')?.classList.remove('show');
+
+  // 🆕 v26.5.7-fix2: 직전 포커스 강제 해제
+  //   confirm() 후 native dialog에서 돌아온 포커스가 이상한 곳에 머물러서
+  //   input이 클릭/타이핑을 못 받는 케이스 방지
+  if (document.activeElement && typeof document.activeElement.blur === 'function') {
+    document.activeElement.blur();
+  }
+
+  // 🆕 v26.5.7-fix2: step1/step2 display 명시적 초기 상태로
+  //   직전에 step2가 표시된 채 닫혔다면 다음에 openNcModal(true) 불러도 잔재가 남을 수 있어서
+  if (typeof ncStep1 !== 'undefined' && ncStep1) ncStep1.style.display = 'block';
+  if (typeof ncStep2 !== 'undefined' && ncStep2) ncStep2.style.display = 'none';
 }
 
 /** NextCloud 모달 닫기. 비밀번호 필드는 보안상 매번 비움 */
@@ -2269,6 +2298,7 @@ document.getElementById('nextcloudAuthBtn').addEventListener('click', async (e) 
   if (!isElectron) { toast('Electron 환경에서만 동작합니다'); return; }
 
   // 🆕 v26.5.7-fix: 다른 모달 정리 (z-index 충돌 방지)
+  // 🆕 v26.5.7-fix2: + 포커스 해제 + step1/step2 display 리셋도 같이 처리됨
   closeAllCalendarModals();
 
   const status = await window.electronAPI.authNextcloudStatus();
@@ -2280,7 +2310,17 @@ document.getElementById('nextcloudAuthBtn').addEventListener('click', async (e) 
     document.getElementById('ncUser').value = '';
     document.getElementById('ncPass').value = '';
     openNcModal(true);
-    setTimeout(() => document.getElementById('ncServer').focus(), 50);
+    // 🆕 v26.5.7-fix2: 모달 fade-in 끝난 다음에 포커스
+    //   기존 50ms는 transparent window 환경에서 가끔 짧음
+    //   double rAF로 다음 프레임 보장 + 100ms 여유
+    requestAnimationFrame(() => {
+      requestAnimationFrame(() => {
+        setTimeout(() => {
+          const srv = document.getElementById('ncServer');
+          if (srv) srv.focus();
+        }, 100);
+      });
+    });
   }
 });
 
@@ -2325,9 +2365,11 @@ let ncStep2Draft = [];
 
 function initNcStep2Draft(calendars) {
   // 첫 가입이라 모두 미체크. 첫 번째에 별 표시 (사용자가 바꿀 수 있음)
+  // 🆕 v26.5.7-fix2: 서버에서 받은 calendar-color (c.color)를 그대로 끌고 감
   ncStep2Draft = calendars.map((c, i) => ({
     url: c.url,
     displayName: c.displayName,
+    color: c.color || null,         // 🆕 서버 원본색 (없으면 null)
     _checked: false,
     isPrimary: false
   }));
@@ -2343,7 +2385,7 @@ function renderNcCalendarsMulti() {
   list.innerHTML = ncStep2Draft.map((c, i) => `
     <div class="cal-select-item" data-idx="${i}">
       <input type="checkbox" class="cal-check" ${c._checked ? 'checked' : ''}>
-      <span class="cal-color-dot" style="background:#0082c9"></span>
+      <span class="cal-color-dot" style="background:${escapeHtml(c.color || '#0082c9')}"></span>
       <span class="cal-name">${escapeHtml(calDisplayName(c, 'nextcloud'))}</span>
       <button class="cal-star ${c.isPrimary ? 'active' : ''}" title="기본 캘린더로 지정">
         ${c.isPrimary ? '⭐' : '☆'}
@@ -2384,11 +2426,18 @@ function renderNcCalendarsMulti() {
 
 // ─── step2의 "완료" 버튼 ───
 document.getElementById('ncSelectDone').addEventListener('click', async () => {
-  const picked = ncStep2Draft.filter(c => c._checked).map(c => ({
-    url: c.url,
-    displayName: calDisplayName(c, 'nextcloud'),  // 🆕 빈 이름 방지
-    isPrimary: c.isPrimary
-  }));
+  // 🆕 v26.5.7-fix2: customColor/originalColor를 서버 원본색으로 채워서 저장
+  //   기존엔 색상 필드를 빼먹어서 첫 연결 시 모든 NC 일정이 브랜드색(#0082c9)으로 표시되던 버그
+  const picked = ncStep2Draft.filter(c => c._checked).map(c => {
+    const baseColor = c.color || '#0082c9';
+    return {
+      url: c.url,
+      displayName: calDisplayName(c, 'nextcloud'),  // 🆕 빈 이름 방지
+      originalColor: baseColor,    // 🆕 서버에서 받아온 원본색 (↺ 리셋용)
+      customColor: baseColor,      // 🆕 처음엔 원본과 동일
+      isPrimary: c.isPrimary
+    };
+  });
 
   if (picked.length === 0) { toast('최소 한 개 이상 선택하세요'); return; }
 
@@ -2570,115 +2619,10 @@ document.getElementById('ncManageSave').addEventListener('click', async () => {
   }
 });
 
-function closeNcManageModal() {
-  ncManageModalBg.classList.remove('show');
-  ncManageDraft = [];
-}
+// 🆕 v26.5.7-fix2: 여기 있던 closeNcManageModal/renderNcManageList/ncManageModalBg 클릭/ncManageCancel/ncManageSave 핸들러의 "두 번째 복붙 블록"을 제거함.
+// 라인 2622~2730에 같은 코드가 한 번 더 있어서 ncManageSave 클릭 시 IPC 레이스 + 토스트 이중 발생 + 색상(originalColor) 누락 등 부작용이 있었음.
+// 위쪽 블록(첫 번째 정의)이 originalColor도 살리고 sameSelection 최적화도 있어서 이게 정상.
 
-function renderNcManageList(listError) {
-  const list = document.getElementById('ncManageList');
-
-  let errorBox = '';
-  if (listError) {
-    errorBox = `
-      <div class="cal-select-error">
-        ⚠ 캘린더 목록을 가져올 수 없습니다.<br>
-        <small>${escapeHtml(listError)}</small><br>
-        <small style="opacity:0.8">서버가 응답하지 않거나 비밀번호가 만료됐을 수 있습니다. 아래 <b>연결 해제</b> 후 다시 연결해보세요.</small>
-      </div>
-    `;
-  }
-
-  if (ncManageDraft.length === 0) {
-    list.innerHTML = errorBox + '<div class="cal-select-empty">사용 가능한 캘린더가 없습니다</div>';
-    return;
-  }
-
-  list.innerHTML = errorBox + ncManageDraft.map((c, i) => `
-    <div class="cal-select-item" data-idx="${i}">
-      <input type="checkbox" class="cal-check" ${c._checked ? 'checked' : ''}>
-      <input type="color" class="cal-color-input" value="${escapeHtml(c.customColor)}" title="클릭하여 색상 변경">
-      <span class="cal-name">${escapeHtml(calDisplayName(c, 'nextcloud'))}</span>
-      <button class="cal-color-reset" title="기본 색상(#0082c9)으로 복원">↺</button>
-      <button class="cal-star ${c.isPrimary ? 'active' : ''}" title="기본 캘린더로 지정">
-        ${c.isPrimary ? '⭐' : '☆'}
-      </button>
-    </div>
-  `).join('');
-
-  list.querySelectorAll('.cal-check').forEach(cb => {
-    cb.addEventListener('change', () => {
-      const i = parseInt(cb.closest('.cal-select-item').dataset.idx, 10);
-      ncManageDraft[i]._checked = cb.checked;
-      if (!cb.checked && ncManageDraft[i].isPrimary) {
-        ncManageDraft[i].isPrimary = false;
-        const next = ncManageDraft.find(x => x._checked);
-        if (next) next.isPrimary = true;
-      }
-      renderNcManageList(listError);
-    });
-  });
-
-  // 🆕 색상 input
-  list.querySelectorAll('.cal-color-input').forEach(inp => {
-    inp.addEventListener('input', () => {
-      const i = parseInt(inp.closest('.cal-select-item').dataset.idx, 10);
-      ncManageDraft[i].customColor = inp.value;
-    });
-  });
-
-  // 🆕 색상 리셋
-  list.querySelectorAll('.cal-color-reset').forEach(btn => {
-    btn.addEventListener('click', e => {
-      e.stopPropagation();
-      const i = parseInt(btn.closest('.cal-select-item').dataset.idx, 10);
-      ncManageDraft[i].customColor = '#0082c9';
-      renderNcManageList(listError);
-    });
-  });
-
-  list.querySelectorAll('.cal-star').forEach(star => {
-    star.addEventListener('click', e => {
-      e.stopPropagation();
-      const i = parseInt(star.closest('.cal-select-item').dataset.idx, 10);
-      if (!ncManageDraft[i]._checked) { toast('먼저 체크해주세요'); return; }
-      ncManageDraft.forEach(x => x.isPrimary = false);
-      ncManageDraft[i].isPrimary = true;
-      renderNcManageList(listError);
-    });
-  });
-}
-
-ncManageModalBg.addEventListener('click', e => {
-  if (e.target.id === 'ncManageModalBg') closeNcManageModal();
-});
-document.getElementById('ncManageCancel').addEventListener('click', closeNcManageModal);
-
-document.getElementById('ncManageSave').addEventListener('click', async () => {
-  const picked = ncManageDraft.filter(c => c._checked).map(c => ({
-    url: c.url,
-    displayName: calDisplayName(c, 'nextcloud'),
-    customColor: c.customColor,    // 🆕
-    isPrimary: c.isPrimary
-  }));
-
-  if (picked.length === 0) {
-    if (!confirm('선택된 캘린더가 없습니다. 모든 NextCloud 일정이 화면에서 사라집니다. 계속할까요?')) return;
-  }
-
-  await window.electronAPI.nextcloudSetSelectedCalendars(picked);
-  closeNcManageModal();
-  await refreshNextcloudAuthStatus();
-  toast(`NextCloud 캘린더 ${picked.length}개 저장됨`);
-
-  // 🆕 색상만 바뀌었을 경우에도 즉시 반영
-  renderCalendar();
-
-  state.events = state.events.filter(e => e.source !== 'nextcloud');
-  await saveEvents();
-  renderCalendar();
-  setTimeout(() => syncFromNextcloud(), 300);
-});
 
 document.getElementById('ncManageRevoke').addEventListener('click', async () => {
   if (!confirm('NextCloud 연결을 해제하시겠습니까?\n가져온 NextCloud 일정도 함께 제거됩니다.')) return;
@@ -2690,6 +2634,11 @@ document.getElementById('ncManageRevoke').addEventListener('click', async () => 
     saveSyncedRange();
     await saveEvents();
     closeNcManageModal();
+    // 🆕 v26.5.7-fix2: 직전 confirm() / 관리 모달의 잔존 포커스 떼기.
+    //   안 떼면 곧바로 "연결" 버튼을 누를 때 step1 input이 죽은 상태로 뜨는 케이스 있음
+    if (document.activeElement && typeof document.activeElement.blur === 'function') {
+      document.activeElement.blur();
+    }
     renderCalendar();
     toast('NextCloud 연결 해제됨');
   } catch (err) {
