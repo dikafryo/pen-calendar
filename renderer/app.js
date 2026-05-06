@@ -45,25 +45,23 @@ const state = {
   // Google 연결 상태 (refreshGoogleAuthStatus()에서 갱신)
   googleAuthenticated: false,
   googleEmail: null,
-  googleSelectedCalendars: [],   // [{id, summary, backgroundColor, isPrimary}]
+  googleSelectedCalendars: [],   // [{id, summary, backgroundColor, customColor, isPrimary}]
 
   // NextCloud 연결 상태 (refreshNextcloudAuthStatus()에서 갱신)
   nextcloudAuthenticated: false,
   nextcloudUsername: null,
   nextcloudCalendarName: null,
-  nextcloudSelectedCalendars: [],   // [{url, displayName, isPrimary}]
+  nextcloudSelectedCalendars: [],   // [{url, displayName, customColor, isPrimary}]
 
-  // 🆕 캘린더별 커스텀 색상 캐시 (빠른 lookup용)
-  // 형식: { google: { 'cal-id': '#ff0000' }, nextcloud: { 'url': '#00ff00' } }
-  // refreshXxxAuthStatus() 호출 시 selectedCalendars로부터 자동 갱신
+  // 🆕 캘린더별 커스텀 색상 lookup 캐시 (renderCalendar에서 빠른 조회용)
+  // 형식: { google: { '<calId>': '#ff0000' }, nextcloud: { '<url>': '#00ff00' } }
+  // refreshXxxAuthStatus()가 selectedCalendars 받아올 때마다 자동 재구성
   calendarColors: {
     google: {},
     nextcloud: {}
   },
 
-  // 🆕 동기화된 날짜 범위 (Date 객체 또는 null)
-  // - 처음 5분마다 동기화 / 수동 동기화 후 갱신됨
-  // - 사용자가 이 범위 밖으로 캘린더 이동하면 ensureRangeSynced()가 자동 fetch
+  // 동기화된 날짜 범위 (Date 객체 또는 null)
   syncedRange: {
     google: { start: null, end: null },
     nextcloud: { start: null, end: null }
@@ -497,7 +495,7 @@ function renderCalendar() {
     let eventHtml = '';
     if (!isCompact) {
       eventHtml = dayEvents.slice(0, maxEvents).map(e => `
-        <div class="day-event ${e.source}" title="${escapeHtml(e.title)}${e.time ? ' ' + e.time : ''}">
+        <div class="day-event ${e.source}" style="${eventInlineStyle(e)}" title="${escapeHtml(e.title)}${e.time ? ' ' + e.time : ''}">
           ${e.time ? `<b>${e.time.slice(0,5)}</b> ` : ''}${escapeHtml(e.title)}
         </div>
       `).join('');
@@ -766,7 +764,7 @@ function sourceColor(s) {
 /**
  * 🆕 이벤트의 실제 색상 결정.
  *  - google/nextcloud 이벤트면 캘린더별 customColor lookup
- *  - 없으면 sourceColor 폴백
+ *  - 없으면 sourceColor 폴백 (#4285f4 / #0082c9 / #34a853)
  */
 function eventColor(e) {
   if (e.source === 'google' && e.googleCalendarId) {
@@ -780,13 +778,11 @@ function eventColor(e) {
   return sourceColor(e.source);
 }
 
-/** 🆕 hex(#RRGGBB) → "rgba(r,g,b,a)" 문자열 */
+/** 🆕 hex(#RRGGBB) → "rgba(r,g,b,a)" 문자열 (반투명 배경용) */
 function hexToRgba(hex, alpha) {
   if (!hex || hex[0] !== '#') return `rgba(0,0,0,${alpha})`;
   const c = hex.replace('#', '');
-  const full = c.length === 3
-    ? c.split('').map(x => x + x).join('')
-    : c;
+  const full = c.length === 3 ? c.split('').map(x => x + x).join('') : c;
   const r = parseInt(full.substring(0, 2), 16) || 0;
   const g = parseInt(full.substring(2, 4), 16) || 0;
   const b = parseInt(full.substring(4, 6), 16) || 0;
@@ -804,10 +800,7 @@ function darkenHex(hex, factor) {
   return `rgb(${r},${g},${b})`;
 }
 
-/**
- * 🆕 day-event용 inline style 문자열.
- *  background(15% 투명) + 진한 텍스트색 + border-left-color
- */
+/** 🆕 day-event용 inline style 문자열 (배경 15% 투명 + 어두운 텍스트 + 좌측 보더색) */
 function eventInlineStyle(e) {
   const color = eventColor(e);
   return `background:${hexToRgba(color, 0.15)};color:${darkenHex(color, 0.45)};border-left-color:${color}`;
@@ -1285,8 +1278,7 @@ async function refreshGoogleAuthStatus() {
       state.googleSelectedCalendars = [];
     }
 
-    // 🆕 캘린더별 색상 캐시 재구성
-    //  - customColor 우선, 없으면 backgroundColor, 그것도 없으면 source 기본색
+    // 🆕 캘린더별 색상 lookup 재구성: customColor > backgroundColor > 폴백
     state.calendarColors.google = {};
     state.googleSelectedCalendars.forEach(c => {
       state.calendarColors.google[c.id] = c.customColor || c.backgroundColor || '#4285f4';
@@ -1330,16 +1322,14 @@ async function refreshNextcloudAuthStatus() {
   try {
     const status = await window.electronAPI.authNextcloudStatus();
 
-    // 🆕 인증 + 1개 이상 캘린더 선택돼있으면 "완전히 연결됨"
     state.nextcloudUsername = status.username || null;
     state.nextcloudSelectedCalendars = status.selectedCalendars || [];
     state.nextcloudAuthenticated = !!status.authenticated && state.nextcloudSelectedCalendars.length > 0;
 
-    // 기본 캘린더 이름 (UI 툴팁용)
     const primary = state.nextcloudSelectedCalendars.find(c => c.isPrimary);
     state.nextcloudCalendarName = primary ? primary.displayName : null;
-    
-    // 🆕 캘린더별 색상 캐시 재구성 (NextCloud는 url이 키)
+
+    // 🆕 캘린더별 색상 lookup 재구성 (NextCloud는 url이 키)
     state.calendarColors.nextcloud = {};
     state.nextcloudSelectedCalendars.forEach(c => {
       state.calendarColors.nextcloud[c.url] = c.customColor || '#0082c9';
@@ -1349,24 +1339,19 @@ async function refreshNextcloudAuthStatus() {
     const lbl = document.getElementById('nextcloudStatus');
 
     if (state.nextcloudAuthenticated) {
-      // ▼ 완전히 연결된 상태
       const count = state.nextcloudSelectedCalendars.length;
       btn.textContent = '연결됨';
       btn.classList.add('connected');
       btn.title = `${status.username} @ ${status.serverUrl}\n캘린더 ${count}개 선택됨\n클릭하여 캘린더 관리`;
       lbl.textContent = `${status.username} · 캘린더 ${count}개`;
       lbl.classList.remove('disconnected');
-
     } else if (status.authenticated) {
-      // ▼ 로그인만 됐고 캘린더 미선택 (드문 케이스)
       btn.textContent = '캘린더 선택';
       btn.classList.remove('connected');
       btn.title = '동기화할 캘린더를 선택하세요';
       lbl.textContent = `${status.username} (캘린더 미선택)`;
       lbl.classList.add('disconnected');
-
     } else {
-      // ▼ 완전 미연결
       btn.textContent = '연결';
       btn.classList.remove('connected');
       btn.title = 'NextCloud 계정 연결';
@@ -2025,7 +2010,7 @@ let gcalDraft = [];
  *  - selected도 없으면: 빈 안내 + 연결 해제 버튼만
  */
 async function openGoogleCalendarSelectModal() {
-  // 저장된 선택 목록 (이건 로컬 store라 토큰 권한과 무관하게 항상 읽힘)
+  // 저장된 선택 목록 (로컬 store라 토큰 권한과 무관하게 항상 읽힘)
   const selected = await window.electronAPI.googleGetSelectedCalendars() || [];
   const selectedIds = new Set(selected.map(c => c.id));
   const primaryId = (selected.find(c => c.isPrimary) || {}).id;
@@ -2044,8 +2029,7 @@ async function openGoogleCalendarSelectModal() {
     listError = err.message || String(err);
   }
 
-  // 🆕 API 실패 시 저장된 selected 목록만이라도 보여주기
-  //    (사용자가 이전에 어떤 캘린더 골랐는지 보이고, customColor도 유지됨)
+  // 🆕 API 실패 시 저장된 selected 목록만이라도 보여주기 (연결 해제 가능하게)
   if (allCals.length === 0 && selected.length > 0) {
     allCals = selected.map(c => ({
       id: c.id,
@@ -2055,21 +2039,20 @@ async function openGoogleCalendarSelectModal() {
     }));
   }
 
-  // draft 초기화: 저장된 selected의 customColor가 있으면 우선 적용
+  // draft 초기화: 저장된 customColor 우선
   gcalDraft = allCals.map(c => {
     const saved = selected.find(s => s.id === c.id);
     return {
       id: c.id,
       summary: c.summary,
       backgroundColor: c.backgroundColor,
-      // 🆕 customColor: 저장된 값 > 원래 backgroundColor > 폴백
       customColor: (saved && saved.customColor) || c.backgroundColor || '#4285f4',
       _checked: selectedIds.has(c.id),
       isPrimary: c.id === primaryId
     };
   });
 
-  renderGcalList(listError);   // 🆕 에러 메시지 함께 전달
+  renderGcalList(listError);
   gcalModalBg.classList.add('show');
 }
 
@@ -2087,7 +2070,7 @@ function closeGcalModal() {
 function renderGcalList(listError) {
   const list = document.getElementById('gcalList');
 
-  // 🆕 에러 안내 박스 (목록 위에)
+  // 🆕 에러 안내 박스
   let errorBox = '';
   if (listError) {
     errorBox = `
@@ -2099,26 +2082,23 @@ function renderGcalList(listError) {
     `;
   }
 
-  // 빈 목록 + 에러 없음 (희귀 케이스)
   if (gcalDraft.length === 0) {
     list.innerHTML = errorBox + '<div class="cal-select-empty">사용 가능한 캘린더가 없습니다</div>';
     return;
   }
 
-  // 정상 렌더 (+ 에러가 있으면 위에 박스 함께)
   list.innerHTML = errorBox + gcalDraft.map((c, i) => `
     <div class="cal-select-item" data-idx="${i}">
       <input type="checkbox" class="cal-check" ${c._checked ? 'checked' : ''}>
       <input type="color" class="cal-color-input" value="${escapeHtml(c.customColor)}" title="클릭하여 색상 변경">
       <span class="cal-name">${escapeHtml(calDisplayName(c, 'google'))}</span>
-      <button class="cal-color-reset" title="원래 색상으로 복원">↺</button>
+      <button class="cal-color-reset" title="원래 Google 색상으로 복원">↺</button>
       <button class="cal-star ${c.isPrimary ? 'active' : ''}" title="기본 캘린더로 지정">
         ${c.isPrimary ? '⭐' : '☆'}
       </button>
     </div>
   `).join('');
 
-  // 체크박스 변경
   list.querySelectorAll('.cal-check').forEach(cb => {
     cb.addEventListener('change', () => {
       const item = cb.closest('.cal-select-item');
@@ -2133,16 +2113,15 @@ function renderGcalList(listError) {
     });
   });
 
-  // 🆕 색상 변경 — input change/input 양쪽으로 즉시 반영 (renderGcalList 안 다시 호출 → 포커스 안 깨짐)
+  // 🆕 색상 picker — input 이벤트로 즉시 draft 갱신 (재렌더 안 함, 포커스 보존)
   list.querySelectorAll('.cal-color-input').forEach(inp => {
     inp.addEventListener('input', () => {
       const i = parseInt(inp.closest('.cal-select-item').dataset.idx, 10);
       gcalDraft[i].customColor = inp.value;
-      // 굳이 전체 다시 그리지 않음 (picker 닫힘 방지). input value 자체가 도트 색이라 시각 반영 자동
     });
   });
 
-  // 🆕 색상 리셋 버튼 — 원래 backgroundColor로 되돌림
+  // 🆕 색상 리셋 (↺) — 원래 Google backgroundColor로 복원
   list.querySelectorAll('.cal-color-reset').forEach(btn => {
     btn.addEventListener('click', e => {
       e.stopPropagation();
@@ -2152,7 +2131,6 @@ function renderGcalList(listError) {
     });
   });
 
-  // 별 클릭
   list.querySelectorAll('.cal-star').forEach(star => {
     star.addEventListener('click', (e) => {
       e.stopPropagation();
@@ -2166,21 +2144,24 @@ function renderGcalList(listError) {
   });
 }
 
-// 모달 배경 클릭 → 닫기
 gcalModalBg.addEventListener('click', e => {
   if (e.target.id === 'gcalModalBg') closeGcalModal();
 });
 document.getElementById('gcalCancel').addEventListener('click', closeGcalModal);
 
-// 저장 버튼
 document.getElementById('gcalSave').addEventListener('click', async () => {
   const picked = gcalDraft.filter(c => c._checked).map(c => ({
     id: c.id,
     summary: calDisplayName(c, 'google'),
     backgroundColor: c.backgroundColor,
-    customColor: c.customColor,        // 🆕 사용자가 정한 색
+    customColor: c.customColor,        // 🆕
     isPrimary: c.isPrimary
   }));
+
+  // 🆕 색상만 변경됐는지 체크 (선택 셋이 같음 + 색만 다름) → 동기화 스킵
+  const oldList = state.googleSelectedCalendars;
+  const sameSelection = picked.length === oldList.length
+    && picked.every(p => oldList.some(o => o.id === p.id && o.isPrimary === p.isPrimary));
 
   if (picked.length === 0) {
     if (!confirm('선택된 캘린더가 없습니다. 모든 Google 일정이 화면에서 사라집니다. 계속할까요?')) return;
@@ -2188,17 +2169,18 @@ document.getElementById('gcalSave').addEventListener('click', async () => {
 
   await window.electronAPI.googleSetSelectedCalendars(picked);
   closeGcalModal();
-  await refreshGoogleAuthStatus();    // calendarColors 캐시 재빌드
+  await refreshGoogleAuthStatus();   // calendarColors 캐시 재빌드
   toast(`Google 캘린더 ${picked.length}개 저장됨`);
 
-  // 🆕 색상만 바꾼 경우에도 즉시 화면에 반영되도록 다시 렌더
-  renderCalendar();
+  renderCalendar();   // 🆕 색상 즉시 반영
 
-  // 캘린더 set이 바뀐 경우엔 동기화도 새로
-  state.events = state.events.filter(e => e.source !== 'google');
-  await saveEvents();
-  renderCalendar();
-  setTimeout(() => syncFromGoogle(), 300);
+  // 캘린더 셋이 바뀐 경우만 재동기화 (색상만 바꿨으면 스킵)
+  if (!sameSelection) {
+    state.events = state.events.filter(e => e.source !== 'google');
+    await saveEvents();
+    renderCalendar();
+    setTimeout(() => syncFromGoogle(), 300);
+  }
 });
 
 // 연결 해제 링크
@@ -2425,12 +2407,9 @@ async function openNextcloudManageModal() {
     listError = err.message || String(err);
   }
 
-  // 🆕 API 실패 시 저장된 selected 만이라도 표시
+  // 🆕 API 실패 시 저장된 selected만이라도 표시
   if (allCals.length === 0 && selected.length > 0) {
-    allCals = selected.map(c => ({
-      url: c.url,
-      displayName: c.displayName
-    }));
+    allCals = selected.map(c => ({ url: c.url, displayName: c.displayName }));
   }
 
   ncManageDraft = allCals.map(c => {
@@ -2438,7 +2417,7 @@ async function openNextcloudManageModal() {
     return {
       url: c.url,
       displayName: c.displayName,
-      customColor: (saved && saved.customColor) || '#0082c9',  // 🆕
+      customColor: (saved && saved.customColor) || '#0082c9',   // 🆕
       _checked: selectedUrls.has(c.url),
       isPrimary: c.url === primaryUrl
     };
@@ -2447,6 +2426,122 @@ async function openNextcloudManageModal() {
   renderNcManageList(listError);
   ncManageModalBg.classList.add('show');
 }
+
+function closeNcManageModal() {
+  ncManageModalBg.classList.remove('show');
+  ncManageDraft = [];
+}
+
+function renderNcManageList(listError) {
+  const list = document.getElementById('ncManageList');
+
+  let errorBox = '';
+  if (listError) {
+    errorBox = `
+      <div class="cal-select-error">
+        ⚠ 캘린더 목록을 가져올 수 없습니다.<br>
+        <small>${escapeHtml(listError)}</small><br>
+        <small style="opacity:0.8">서버가 응답하지 않거나 비밀번호가 만료됐을 수 있습니다. 아래 <b>연결 해제</b> 후 다시 연결해보세요.</small>
+      </div>
+    `;
+  }
+
+  if (ncManageDraft.length === 0) {
+    list.innerHTML = errorBox + '<div class="cal-select-empty">사용 가능한 캘린더가 없습니다</div>';
+    return;
+  }
+
+  list.innerHTML = errorBox + ncManageDraft.map((c, i) => `
+    <div class="cal-select-item" data-idx="${i}">
+      <input type="checkbox" class="cal-check" ${c._checked ? 'checked' : ''}>
+      <input type="color" class="cal-color-input" value="${escapeHtml(c.customColor)}" title="클릭하여 색상 변경">
+      <span class="cal-name">${escapeHtml(calDisplayName(c, 'nextcloud'))}</span>
+      <button class="cal-color-reset" title="기본 색상(#0082c9)으로 복원">↺</button>
+      <button class="cal-star ${c.isPrimary ? 'active' : ''}" title="기본 캘린더로 지정">
+        ${c.isPrimary ? '⭐' : '☆'}
+      </button>
+    </div>
+  `).join('');
+
+  list.querySelectorAll('.cal-check').forEach(cb => {
+    cb.addEventListener('change', () => {
+      const i = parseInt(cb.closest('.cal-select-item').dataset.idx, 10);
+      ncManageDraft[i]._checked = cb.checked;
+      if (!cb.checked && ncManageDraft[i].isPrimary) {
+        ncManageDraft[i].isPrimary = false;
+        const next = ncManageDraft.find(x => x._checked);
+        if (next) next.isPrimary = true;
+      }
+      renderNcManageList(listError);
+    });
+  });
+
+  // 🆕 색상 picker
+  list.querySelectorAll('.cal-color-input').forEach(inp => {
+    inp.addEventListener('input', () => {
+      const i = parseInt(inp.closest('.cal-select-item').dataset.idx, 10);
+      ncManageDraft[i].customColor = inp.value;
+    });
+  });
+
+  // 🆕 색상 리셋
+  list.querySelectorAll('.cal-color-reset').forEach(btn => {
+    btn.addEventListener('click', e => {
+      e.stopPropagation();
+      const i = parseInt(btn.closest('.cal-select-item').dataset.idx, 10);
+      ncManageDraft[i].customColor = '#0082c9';
+      renderNcManageList(listError);
+    });
+  });
+
+  list.querySelectorAll('.cal-star').forEach(star => {
+    star.addEventListener('click', e => {
+      e.stopPropagation();
+      const i = parseInt(star.closest('.cal-select-item').dataset.idx, 10);
+      if (!ncManageDraft[i]._checked) { toast('먼저 체크해주세요'); return; }
+      ncManageDraft.forEach(x => x.isPrimary = false);
+      ncManageDraft[i].isPrimary = true;
+      renderNcManageList(listError);
+    });
+  });
+}
+
+ncManageModalBg.addEventListener('click', e => {
+  if (e.target.id === 'ncManageModalBg') closeNcManageModal();
+});
+document.getElementById('ncManageCancel').addEventListener('click', closeNcManageModal);
+
+document.getElementById('ncManageSave').addEventListener('click', async () => {
+  const picked = ncManageDraft.filter(c => c._checked).map(c => ({
+    url: c.url,
+    displayName: calDisplayName(c, 'nextcloud'),
+    customColor: c.customColor,    // 🆕
+    isPrimary: c.isPrimary
+  }));
+
+  // 🆕 선택 셋이 같으면 동기화 스킵 (색상만 바뀐 경우)
+  const oldList = state.nextcloudSelectedCalendars;
+  const sameSelection = picked.length === oldList.length
+    && picked.every(p => oldList.some(o => o.url === p.url && o.isPrimary === p.isPrimary));
+
+  if (picked.length === 0) {
+    if (!confirm('선택된 캘린더가 없습니다. 모든 NextCloud 일정이 화면에서 사라집니다. 계속할까요?')) return;
+  }
+
+  await window.electronAPI.nextcloudSetSelectedCalendars(picked);
+  closeNcManageModal();
+  await refreshNextcloudAuthStatus();
+  toast(`NextCloud 캘린더 ${picked.length}개 저장됨`);
+
+  renderCalendar();   // 🆕 색상 즉시 반영
+
+  if (!sameSelection) {
+    state.events = state.events.filter(e => e.source !== 'nextcloud');
+    await saveEvents();
+    renderCalendar();
+    setTimeout(() => syncFromNextcloud(), 300);
+  }
+});
 
 function closeNcManageModal() {
   ncManageModalBg.classList.remove('show');

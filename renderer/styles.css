@@ -261,7 +261,12 @@ body {
     inset 0 -1px 0 rgba(0, 0, 0, 0.15);
 }
 .day.today .day-num { color: white; font-weight: 700; }
-.day.today .day-event { background: rgba(255, 255, 255, 0.28); color: white; }
+/* 🆕 today 셀의 일정은 inline style(eventInlineStyle)보다 우선 — 흰색 강제 */
+.day.today .day-event {
+  background: rgba(255, 255, 255, 0.28) !important;
+  color: white !important;
+  border-left-color: rgba(255, 255, 255, 0.6) !important;
+}
 .day.compact { padding: 4px 4px 3px; }
 .day.compact .day-events { display: none; }
 .day.compact .day-dots {
@@ -875,71 +880,6 @@ body {
 .cal-select-item:hover      { background: #f0f7ff; }
 
 .cal-select-item .cal-check { margin: 0; cursor: pointer; }
-/* ╔══════════════════════════════════════════════════════════════════╗
-   ║  🆕 캘린더 선택 모달 — 컬러 피커 + 에러 안내 박스                   ║
-   ╚══════════════════════════════════════════════════════════════════╝ */
-
-/* color input을 동그란 도트처럼 (16px) */
-.cal-select-item .cal-color-input {
-  width: 16px;
-  height: 16px;
-  min-width: 16px;
-  max-width: 16px;
-  border-radius: 50%;
-  border: 1px solid rgba(0, 0, 0, 0.15);
-  padding: 0;
-  cursor: pointer;
-  appearance: none;
-  -webkit-appearance: none;
-  background: transparent;
-  flex-shrink: 0;
-  flex-grow: 0;
-  overflow: hidden;
-  box-sizing: border-box;
-}
-.cal-select-item .cal-color-input::-webkit-color-swatch-wrapper { padding: 0; border-radius: 50%; }
-.cal-select-item .cal-color-input::-webkit-color-swatch         { border: none; border-radius: 50%; }
-.cal-select-item .cal-color-input::-moz-color-swatch            { border: none; border-radius: 50%; }
-.cal-select-item .cal-color-input:hover { transform: scale(1.15); transition: transform 0.1s; }
-
-/* 색상 리셋 버튼 (↺) */
-.cal-color-reset {
-  border: none;
-  background: transparent;
-  cursor: pointer;
-  font-size: 13px;
-  padding: 1px 5px;
-  color: #aaa;
-  border-radius: 4px;
-  line-height: 1;
-  flex-shrink: 0;
-}
-.cal-color-reset:hover { background: rgba(0,0,0,0.07); color: #555; }
-
-/* 캘린더 목록 조회 실패 안내 박스 */
-.cal-select-error {
-  padding: 10px 12px;
-  background: #fff7e6;
-  border-bottom: 1px solid #ffe0a3;
-  color: #8a5a00;
-  font-size: 11px;
-  line-height: 1.55;
-}
-.cal-select-error b { color: #6b4500; }
-.cal-select-error small { font-size: 10.5px; }
-
-/* today 셀의 일정은 inline style보다 우선 (흰색 강제) */
-.day.today .day-event {
-  background: rgba(255, 255, 255, 0.28) !important;
-  color: white !important;
-  border-left-color: rgba(255,255,255,0.6) !important;
-}
-
-/* 모달 내 캘린더 목록 컨테이너 — 가로 스크롤 방지 */
-#gcalList, #ncManageList {
-  overflow-x: hidden;
-  overflow-y: auto;
-}
 
 .cal-color-dot {
   width: 10px;
@@ -1014,4 +954,69 @@ body {
 @keyframes sync-pulse {
   0%, 100% { opacity: 0.6; }
   50%      { opacity: 1; }
+}
+/* ═════════════════════════════════════════════════════════
+   🆕 v26.5.7: 캘린더 선택 모달 - 컬러피커 + 에러 안내
+   ═════════════════════════════════════════════════════════ */
+
+/* 색상 입력을 동그란 도트처럼 (16px) — 글로벌 .modal input 룰 영향 차단 */
+.cal-select-item .cal-color-input {
+  width: 16px;
+  height: 16px;
+  min-width: 16px;
+  max-width: 16px;
+  border-radius: 50%;
+  border: 1px solid rgba(0, 0, 0, 0.15);
+  padding: 0;
+  cursor: pointer;
+  appearance: none;
+  -webkit-appearance: none;
+  background: transparent;
+  flex-shrink: 0;
+  flex-grow: 0;
+  overflow: hidden;
+  box-sizing: border-box;
+}
+.cal-select-item .cal-color-input::-webkit-color-swatch-wrapper { padding: 0; border-radius: 50%; }
+.cal-select-item .cal-color-input::-webkit-color-swatch         { border: none; border-radius: 50%; }
+.cal-select-item .cal-color-input::-moz-color-swatch            { border: none; border-radius: 50%; }
+.cal-select-item .cal-color-input:hover {
+  transform: scale(1.15);
+  transition: transform 0.1s;
+}
+
+/* 색상 리셋 버튼 (↺) — 원래 색으로 복원 */
+.cal-color-reset {
+  border: none;
+  background: transparent;
+  cursor: pointer;
+  font-size: 13px;
+  padding: 1px 5px;
+  color: #aaa;
+  border-radius: 4px;
+  line-height: 1;
+  flex-shrink: 0;
+}
+.cal-color-reset:hover {
+  background: rgba(0, 0, 0, 0.07);
+  color: #555;
+}
+
+/* 캘린더 목록 조회 실패 안내 박스 */
+.cal-select-error {
+  padding: 10px 12px;
+  background: #fff7e6;
+  border-bottom: 1px solid #ffe0a3;
+  color: #8a5a00;
+  font-size: 11px;
+  line-height: 1.55;
+}
+.cal-select-error b     { color: #6b4500; }
+.cal-select-error small { font-size: 10.5px; }
+
+/* 모달 내 캘린더 목록 컨테이너 — 가로 스크롤 방지 */
+#gcalList,
+#ncManageList {
+  overflow-x: hidden;
+  overflow-y: auto;
 }
