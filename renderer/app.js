@@ -1300,8 +1300,27 @@ function openEventModal(event, defaultDate) {
       const startDate = document.getElementById('evDate').value;
       const startTime = document.getElementById('evTime').value;
       const def = computeDefaultEnd(startDate, startTime);
-      document.getElementById('evEndDate').value = (event.endDate || editTarget.endDate || def.endDate);
-      document.getElementById('evEndTime').value = (event.endTime || editTarget.endTime || def.endTime);
+      let endDateValue = (event.endDate || editTarget.endDate || def.endDate);
+      const endTimeValue = (event.endTime || editTarget.endTime || def.endTime);
+
+      // 🆕 v26.5.8g 가상 인스턴스 편집 시 endDate 를 인스턴스 시작일 기준으로 보정.
+      //   가상 인스턴스는 expandRecurrencesForRange 가 `{...master}` 로 만들어내기 때문에
+      //   endDate = master.endDate 가 그대로 박혀있다. evDate 만 _instanceDate 로 덮여서
+      //   "시작일=인스턴스 날짜 / 종료일=마스터 시작일" 같은 어긋남이 생김.
+      //   마스터의 (endDate - date) duration 만큼 인스턴스 시작일에 더해 재계산.
+      if (event._virtualOf && editTarget.endDate && editTarget.date) {
+        const ms = new Date(editTarget.date + 'T00:00:00').getTime();
+        const me = new Date(editTarget.endDate + 'T00:00:00').getTime();
+        const durationMs = me - ms;
+        if (durationMs >= 0) {
+          const instStart = new Date(startDate + 'T00:00:00');
+          const instEnd = new Date(instStart.getTime() + durationMs);
+          endDateValue = formatDate(instEnd);
+        }
+      }
+
+      document.getElementById('evEndDate').value = endDateValue;
+      document.getElementById('evEndTime').value = endTimeValue;
     }
     document.getElementById('evSource').value = editTarget.source || 'local';
     document.getElementById('evMemo').value   = (event.memo || editTarget.memo || '');
@@ -2824,10 +2843,15 @@ document.getElementById('saveEvent').addEventListener('click', saveEvent);
 document.getElementById('cancelEvent').addEventListener('click', closeEventModal);
 document.getElementById('deleteEvent').addEventListener('click', deleteEvent);
 
-// 모달 배경(검은 영역) 클릭 → 닫기. 단, 모달 박스 안 클릭은 무시.
-document.getElementById('eventModalBg').addEventListener('click', e => {
-  if (e.target.id === 'eventModalBg') closeEventModal();
-});
+// 🆕 v26.5.8g 모달 backdrop 좌클릭으로 닫는 동작 제거.
+//   ── 이전 동작: backdrop click → 모달 닫힘.
+//   ── 문제: 모달 안 input 의 텍스트를 드래그 선택할 때 마우스가 backdrop 까지 빠져서
+//      거기서 떼지면 mouseup target = backdrop → click target = backdrop → 닫힘 발생.
+//   ── 새 동작: 모달은 (1) 모달 외부 우클릭 (line ~3770 contextmenu 핸들러),
+//      (2) 하단의 취소/삭제/저장 버튼 으로만 닫힘.
+// document.getElementById('eventModalBg').addEventListener('click', e => {
+//   if (e.target.id === 'eventModalBg') closeEventModal();
+// });
 
 // 시간 입력 변경 시 알람 칩 활성화/비활성화 갱신
 document.getElementById('evTime').addEventListener('input', updateAlarmChips);
