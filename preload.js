@@ -42,7 +42,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   authNextcloudStatus: () => ipcRenderer.invoke('auth-nextcloud-status'),
   authNextcloudRevoke: () => ipcRenderer.invoke('auth-nextcloud-revoke'),
   nextcloudListCalendars: () => ipcRenderer.invoke('nextcloud-list-calendars'),
-  pushNextcloudEvent: (event) => ipcRenderer.invoke('push-nextcloud-event', event),
+  pushNextcloudEvent: (event, options) => ipcRenderer.invoke('push-nextcloud-event', event, options),
   deleteNextcloudEvent: (event) => ipcRenderer.invoke('delete-nextcloud-event', event),
 
   // 🆕 Google 다중 캘린더

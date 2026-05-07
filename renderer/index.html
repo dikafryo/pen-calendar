@@ -252,7 +252,7 @@
         <input type="date" id="evDate">
       </div>
       <div>
-        <label>시간 (선택)</label>
+        <label>시간 (비우면 종일)</label>
         <input type="time" id="evTime">
       </div>
     </div>
@@ -296,8 +296,8 @@
       <div class="recurrence-end-row">
         <select id="evRecurrenceEndType">
           <option value="never">계속 반복</option>
-          <option value="count">횟수 지정</option>
-          <option value="until">날짜까지</option>
+          <option value="count">N회 반복 후 종료</option>
+          <option value="until">특정 날짜까지</option>
         </select>
         <input type="number" id="evRecurrenceCount" min="1" max="999" value="10" placeholder="횟수" style="display:none">
         <input type="date" id="evRecurrenceUntil" style="display:none">

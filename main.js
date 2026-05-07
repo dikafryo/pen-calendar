@@ -451,9 +451,10 @@ function setupIPC() {
       return { ok: false, error: err.message };
     }
   });
-  ipcMain.handle('push-nextcloud-event', async (e, event) => {
+  ipcMain.handle('push-nextcloud-event', async (e, event, options) => {
     try {
-      const result = await require('./sync/nextcloud-calendar').pushEvent(event);
+      // 🆕 v26.5.8b options.detachedInstances 지원 (분리 인스턴스 묶음 push)
+      const result = await require('./sync/nextcloud-calendar').pushEvent(event, options);
       return { ok: true, event: result };
     } catch (err) {
       console.error('[push-nextcloud-event]', err);

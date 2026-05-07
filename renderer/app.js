@@ -1578,10 +1578,10 @@ async function saveEvent() {
     data.ncCalendarUrl = calendarValue;
   }
 
-  // 🆕 v26.5.8a 폼에서 RRULE 수집 + 로컬만 허용
+  // 🆕 v26.5.8b 폼에서 RRULE 수집 + 로컬 또는 NextCloud 허용
   const formRrule = collectRecurrenceString();   // "" 또는 "FREQ=...;..."
-  if (formRrule && data.source !== 'local') {
-    toast('반복 일정은 현재 로컬에만 저장 가능합니다 (v26.5.8a)', 3500);
+  if (formRrule && data.source !== 'local' && data.source !== 'nextcloud') {
+    toast('반복 일정은 로컬 또는 NextCloud 만 지원합니다', 3500);
     data.source = 'local';
   }
 
@@ -1612,8 +1612,8 @@ async function saveEvent() {
       const old = state.events[idx];
       let merged = { ...old, ...data };   // 기존 + 새 입력
 
-      // 🆕 v26.5.8a 일반 일정 → 마스터로 승격, 또는 마스터 → 일반 변환
-      if (formRrule && data.source === 'local') {
+      // 🆕 v26.5.8b 일반 일정 → 마스터로 승격, 또는 마스터 → 일반 변환 (로컬 + NextCloud)
+      if (formRrule && (data.source === 'local' || data.source === 'nextcloud')) {
         merged.recurrence = formRrule;
         if (!merged.exdates) merged.exdates = [];
       } else {
@@ -1643,9 +1643,21 @@ async function saveEvent() {
         else      toast('Google 푸시 실패: ' + r.error, 3500);
       } else if (data.source === 'nextcloud' && isElectron && state.nextcloudAuthenticated) {
         toast('NextCloud에 동기화 중...');
-        const r = await window.electronAPI.pushNextcloudEvent(merged);
-        if (r.ok) merged = { ...merged, ...r.event };
-        else      toast('NextCloud 푸시 실패: ' + r.error, 3500);
+        // 🆕 v26.5.8b 자식 분리 인스턴스가 있으면 묶어서 push
+        const detachedInstances = state.events.filter(e => e.recurrenceId === merged.id);
+        const r = await window.electronAPI.pushNextcloudEvent(merged, { detachedInstances });
+        if (r.ok) {
+          merged = { ...merged, ...r.event };
+          // 자식들에게도 새 ncUid/ncUrl/ncEtag 반영 (다음 sync 정합)
+          for (const child of detachedInstances) {
+            child.ncUid = r.event.ncUid;
+            child.ncUrl = r.event.ncUrl;
+            child.ncEtag = r.event.ncEtag;
+            child.ncCalendarUrl = r.event.ncCalendarUrl;
+          }
+        } else {
+          toast('NextCloud 푸시 실패: ' + r.error, 3500);
+        }
       }
 
       state.events[idx] = merged;
@@ -1657,8 +1669,8 @@ async function saveEvent() {
       // ═══════════════════════════════════════════════
       let newEvent = { id: uid(), ...data };
 
-      // 🆕 v26.5.8a 새 마스터 (RRULE 있을 때만, 로컬만)
-      if (formRrule && data.source === 'local') {
+      // 🆕 v26.5.8b 새 마스터 (RRULE 있을 때만, 로컬 + NextCloud)
+      if (formRrule && (data.source === 'local' || data.source === 'nextcloud')) {
         newEvent.recurrence = formRrule;
         newEvent.exdates = [];
       }
@@ -1699,6 +1711,42 @@ async function saveEvent() {
 
 
 /**
+ * 🆕 v26.5.8b 마스터(NextCloud) + 분리 인스턴스 묶음 push 헬퍼.
+ *  - master.source !== 'nextcloud' 또는 인증 안 됐으면 noop ({skipped:true} 반환)
+ *  - state.events 에서 recurrenceId === master.id 인 자식들 모두 모아 detachedInstances 로 전달
+ *  - 응답으로 받은 ncUid/ncUrl/ncEtag/ncCalendarUrl 을 마스터와 모든 자식들에 동기화
+ *    (다음 incrementalSync 에서 정합성 유지)
+ *
+ *  ⚠ 호출 전제: master 가 state.events 안에 존재 (없으면 알림 후 noop)
+ */
+async function pushNcMasterWithInstances(master) {
+  if (!isElectron || !state.nextcloudAuthenticated) return { skipped: true };
+  if (!master || master.source !== 'nextcloud') return { skipped: true };
+
+  const detachedInstances = state.events.filter(e => e.recurrenceId === master.id);
+  toast('NextCloud에 동기화 중...');
+  const r = await window.electronAPI.pushNextcloudEvent(master, { detachedInstances });
+  if (!r || !r.ok) {
+    toast('NextCloud 푸시 실패: ' + (r && r.error || 'unknown'), 3500);
+    return r || { ok: false };
+  }
+
+  // 마스터 자체 갱신 (state.events 안의 객체에 ncUid/ncUrl/etc 반영)
+  const idx = state.events.findIndex(e => e.id === master.id);
+  if (idx >= 0) {
+    Object.assign(state.events[idx], r.event);
+  }
+  // 자식들에게도 같은 url/etag/uid 반영 — 다음 sync 때 같은 ICS 객체로 인식되도록
+  for (const child of detachedInstances) {
+    child.ncUid = r.event.ncUid;
+    child.ncUrl = r.event.ncUrl;
+    child.ncEtag = r.event.ncEtag;
+    child.ncCalendarUrl = r.event.ncCalendarUrl;
+  }
+  return r;
+}
+
+/**
  * 🆕 v26.5.8a 반복 인스턴스 편집 처리.
  * "이 일정만 / 이후 모두 / 모두" 다이얼로그를 띄워 사용자 결정에 따라 분기.
  *
@@ -1720,6 +1768,9 @@ async function saveRecurrenceEdit(ctx, formData, formRrule) {
   }
   const master = state.events[masterIdx];
 
+  // 🆕 v26.5.8b push 대상 마스터 ID 모음 (NextCloud 동기화용)
+  const affectedMasterIds = new Set();
+
   // ─────────────────────────────────────────────────────
   // "이 일정만" — 이 인스턴스만 분리
   // ─────────────────────────────────────────────────────
@@ -1735,7 +1786,8 @@ async function saveRecurrenceEdit(ctx, formData, formRrule) {
         title: formData.title,
         date: formData.date,
         time: formData.time,
-        source: 'local',
+        // 🆕 v26.5.8b 자식의 source 는 마스터 따라감 (NextCloud 마스터면 자식도 NextCloud)
+        source: master.source,
         memo: formData.memo,
         alarms: formData.alarms,
         recurrenceId: master.id,
@@ -1752,20 +1804,20 @@ async function saveRecurrenceEdit(ctx, formData, formRrule) {
           date: formData.date,
           time: formData.time,
           memo: formData.memo,
-          alarms: formData.alarms,
-          source: 'local'
-          // recurrenceId/originalStart 그대로 유지
+          alarms: formData.alarms
+          // source/recurrenceId/originalStart 그대로 유지 (마스터 따라가는 source 보존)
         };
       }
     }
+    affectedMasterIds.add(master.id);
     toast('이 일정만 수정되었습니다');
-    return true;
   }
 
   // ─────────────────────────────────────────────────────
   // "이후 모두" — 마스터를 인스턴스 직전까지 끊고 새 마스터 생성
   // ─────────────────────────────────────────────────────
-  if (scope === 'future') {
+  else if (scope === 'future') {
+    let masterRemoved = false;
     const oldRrule = parseRrule(master.recurrence);
     if (oldRrule) {
       const cutoff = dateMinusOne(ctx.instanceDate);
@@ -1774,7 +1826,12 @@ async function saveRecurrenceEdit(ctx, formData, formRrule) {
       oldRrule.count = null;
       if (cutoff < master.date) {
         // 마스터 시작일조차 이후 시리즈에 들어가버림 → 마스터 자체 삭제
+        // 🆕 v26.5.8b NextCloud 마스터면 서버에서도 삭제
+        if (master.source === 'nextcloud' && master.ncUrl && isElectron) {
+          try { await window.electronAPI.deleteNextcloudEvent(master); } catch {}
+        }
         state.events.splice(masterIdx, 1);
+        masterRemoved = true;
       } else {
         state.events[masterIdx] = { ...master, recurrence: buildRrule(oldRrule) };
       }
@@ -1787,27 +1844,33 @@ async function saveRecurrenceEdit(ctx, formData, formRrule) {
       title: formData.title,
       date: formData.date,
       time: formData.time,
-      source: 'local',
+      // 🆕 v26.5.8b 새 마스터 source 도 원본 마스터 따라감
+      source: master.source,
       memo: formData.memo,
       alarms: formData.alarms,
       recurrence: newRrule,
-      exdates: []
+      exdates: [],
+      // NextCloud 마스터의 calendar 유지 — 새 마스터도 같은 캘린더에 들어감
+      ...(master.source === 'nextcloud' && master.ncCalendarUrl
+          ? { ncCalendarUrl: master.ncCalendarUrl } : {})
     };
     state.events.push(newMaster);
+
+    if (!masterRemoved) affectedMasterIds.add(master.id);
+    affectedMasterIds.add(newMaster.id);
     toast('이 날짜부터의 일정이 변경되었습니다');
-    return true;
   }
 
   // ─────────────────────────────────────────────────────
   // "모두" — 마스터 자체를 폼 값으로 수정 (분리 인스턴스는 그대로)
   // ─────────────────────────────────────────────────────
-  if (scope === 'all') {
+  else if (scope === 'all') {
     const updated = {
       ...master,
       title: formData.title,
       date: formData.date,
       time: formData.time,
-      source: 'local',
+      // 🆕 v26.5.8b source 는 마스터(원본) 그대로 유지
       memo: formData.memo,
       alarms: formData.alarms,
       recurrence: formRrule || master.recurrence,
@@ -1819,11 +1882,18 @@ async function saveRecurrenceEdit(ctx, formData, formRrule) {
       delete updated.exdates;
     }
     state.events[masterIdx] = updated;
+    affectedMasterIds.add(master.id);
     toast('시리즈 전체가 수정되었습니다');
-    return true;
+  } else {
+    return false;
   }
 
-  return false;
+  // 🆕 v26.5.8b 영향받은 NextCloud 마스터들에 대해 묶음 push
+  for (const mid of affectedMasterIds) {
+    const m = state.events.find(e => e.id === mid);
+    if (m) await pushNcMasterWithInstances(m);
+  }
+  return true;
 }
 
 
@@ -1857,14 +1927,23 @@ async function deleteEvent() {
         state.events = state.events.filter(e => e.id !== state.editingEventId);
       }
       toast('이 일정만 삭제되었습니다');
+      // 🆕 v26.5.8b NextCloud면 마스터 + 남은 자식들 묶어 push
+      const m = state.events.find(e => e.id === master.id);
+      if (m) await pushNcMasterWithInstances(m);
     } else if (scope === 'future') {
+      let masterRemoved = false;
       const oldRrule = parseRrule(master.recurrence);
       if (oldRrule) {
         const cutoff = dateMinusOne(ctx.instanceDate);
         oldRrule.until = cutoff;
         oldRrule.count = null;
         if (cutoff < master.date) {
+          // 🆕 v26.5.8b 마스터 자체 제거 — NextCloud 면 서버에서도 삭제
+          if (master.source === 'nextcloud' && master.ncUrl && isElectron) {
+            try { await window.electronAPI.deleteNextcloudEvent(master); } catch {}
+          }
           state.events.splice(masterIdx, 1);
+          masterRemoved = true;
         } else {
           state.events[masterIdx] = { ...master, recurrence: buildRrule(oldRrule) };
         }
@@ -1876,7 +1955,16 @@ async function deleteEvent() {
         return (e.originalStart || e.date) < ctx.instanceDate;
       });
       toast('이 날짜부터의 일정이 삭제되었습니다');
+      // 🆕 v26.5.8b 마스터가 살아있으면 push, 죽었으면 위에서 이미 deleteNextcloudEvent 호출됨
+      if (!masterRemoved) {
+        const m = state.events.find(e => e.id === master.id);
+        if (m) await pushNcMasterWithInstances(m);
+      }
     } else if (scope === 'all') {
+      // 🆕 v26.5.8b NextCloud 마스터면 서버에서 ICS 묶음 통째로 삭제 (자식들도 같이 사라짐)
+      if (master.source === 'nextcloud' && master.ncUrl && isElectron) {
+        try { await window.electronAPI.deleteNextcloudEvent(master); } catch {}
+      }
       // 마스터 + 모든 분리 인스턴스 제거
       state.events = state.events.filter(e =>
         e.id !== master.id && e.recurrenceId !== master.id
