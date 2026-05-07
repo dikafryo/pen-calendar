@@ -67,6 +67,23 @@ function veventToLocal(vevent, url, etag, calendarUrl, idPrefix) {
     date = formatDate(js); time = formatTime(js);
   }
 
+  // 🆕 v26.5.8c DTEND 추출
+  //   - timed: endDate, endTime 모두 채움 (KST)
+  //   - all-day: endDate 만 채우고 ICS DTEND (exclusive) 에서 -1일 (inclusive 마지막 날)
+  //   - DTEND 없으면 (DURATION만 있거나 인스턴트 이벤트) 빈 값 — 호출자가 디폴트 처리
+  let endDate = '', endTime = '';
+  if (event.endDate) {
+    if (event.endDate.isDate) {
+      const e = event.endDate.clone();
+      e.day -= 1; // exclusive → inclusive
+      endDate = `${e.year}-${pad2(e.month)}-${pad2(e.day)}`;
+    } else {
+      const ejs = event.endDate.toJSDate();
+      endDate = formatDate(ejs);
+      endTime = formatTime(ejs);
+    }
+  }
+
   const alarmSet = new Set();
   vevent.getAllSubcomponents('valarm').forEach(va => {
     const trig = va.getFirstPropertyValue('trigger');
@@ -117,6 +134,8 @@ function veventToLocal(vevent, url, etag, calendarUrl, idPrefix) {
     ncCalendarUrl: calendarUrl,
     title: event.summary || '(제목 없음)',
     date, time,
+    // 🆕 v26.5.8c 종료일/종료시각 (DTEND가 없거나 디폴트와 같으면 비어있을 수 있음)
+    endDate, endTime,
     source: 'nextcloud',
     alarms: [...alarmSet],
     memo: event.description || ''
@@ -284,14 +303,29 @@ function buildVevent(local, opts = {}) {
   if (local.memo) event.description = local.memo;
 
   if (local.time) {
+    // timed 일정: DTSTART = (date,time) KST → UTC, DTEND = (endDate,endTime) 우선, 없으면 +1h
     const startJs = new Date(`${local.date}T${local.time}:00+09:00`);
-    const endJs = new Date(startJs.getTime() + 60 * 60 * 1000);
+    let endJs;
+    if (local.endDate && local.endTime) {
+      endJs = new Date(`${local.endDate}T${local.endTime}:00+09:00`);
+    } else {
+      endJs = new Date(startJs.getTime() + 60 * 60 * 1000); // 디폴트 +1h
+    }
     event.startDate = ICAL.Time.fromJSDate(startJs, true);
     event.endDate = ICAL.Time.fromJSDate(endJs, true);
   } else {
+    // all-day: DTSTART;VALUE=DATE, DTEND;VALUE=DATE — RFC 5545 DTEND 은 exclusive 라
+    //          local.endDate (inclusive 마지막 날) 에 +1일 해서 ICS 로 보냄.
     const [y, m, d] = local.date.split('-').map(Number);
     const start = new ICAL.Time({ year: y, month: m, day: d, isDate: true });
-    const end = start.clone(); end.day += 1;
+    let end;
+    if (local.endDate) {
+      const [ey, em, ed] = local.endDate.split('-').map(Number);
+      end = new ICAL.Time({ year: ey, month: em, day: ed, isDate: true });
+      end.day += 1; // inclusive → exclusive
+    } else {
+      end = start.clone(); end.day += 1;
+    }
     event.startDate = start;
     event.endDate = end;
   }
@@ -573,6 +607,9 @@ async function pushEvent(local, options = {}) {
     title: local.title || '',
     date: local.date,
     time: local.time || '',
+    // 🆕 v26.5.8c 종료일/종료시각 그대로 반환 (호출자가 store 갱신 시 보존)
+    endDate: local.endDate || '',
+    endTime: local.endTime || '',
     source: 'nextcloud',
     alarms: local.alarms || [],
     memo: local.memo || '',

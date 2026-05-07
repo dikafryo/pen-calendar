@@ -1277,6 +1277,14 @@ function openEventModal(event, defaultDate) {
     // 가상 인스턴스를 편집할 때는 날짜는 "그 인스턴스의 날짜"로 보여야 함
     document.getElementById('evDate').value   = (event._instanceDate || event.date || editTarget.date);
     document.getElementById('evTime').value   = (event.time || editTarget.time || '');
+    // 🆕 v26.5.8c 종료일/종료시각 — 없으면 computeDefaultEnd 로 채움
+    {
+      const startDate = document.getElementById('evDate').value;
+      const startTime = document.getElementById('evTime').value;
+      const def = computeDefaultEnd(startDate, startTime);
+      document.getElementById('evEndDate').value = (event.endDate || editTarget.endDate || def.endDate);
+      document.getElementById('evEndTime').value = (event.endTime || editTarget.endTime || def.endTime);
+    }
     document.getElementById('evSource').value = editTarget.source || 'local';
     document.getElementById('evMemo').value   = (event.memo || editTarget.memo || '');
     // 기존 알람들을 editingAlarms에 채워서 칩(chip) 활성화 상태로
@@ -1294,6 +1302,9 @@ function openEventModal(event, defaultDate) {
     // 더블클릭한 셀의 날짜 또는 마지막으로 클릭한 날짜
     document.getElementById('evDate').value   = formatDate(defaultDate || state.selectedDate);
     document.getElementById('evTime').value   = '';
+    // 🆕 v26.5.8c 종료 디폴트: 종료일 = 시작일, 종료시각 빈값 (저장 시 자동 채움)
+    document.getElementById('evEndDate').value = document.getElementById('evDate').value;
+    document.getElementById('evEndTime').value = '';
     // 기본 저장 위치: Google 연결되면 google, 아니면 local
     document.getElementById('evSource').value = state.googleAuthenticated ? 'google' : 'local';
     document.getElementById('evMemo').value   = '';
@@ -1550,6 +1561,50 @@ function askRecurrenceScope(mode) {
 
 
 /**
+ * 🆕 v26.5.8c 시작(date,time)으로부터 디폴트 종료(endDate,endTime) 계산.
+ *  - timed 일정 (time 있음): 시작 +1시간. 24시 넘으면 다음날로 자연 롤오버.
+ *  - all-day 일정 (time 없음): 종료일 = 시작일 (단일 종일), 종료시각 빈 문자열.
+ */
+function computeDefaultEnd(date, time) {
+  if (!time) return { endDate: date, endTime: '' };
+  const startJs = new Date(`${date}T${time}:00`);
+  const endJs = new Date(startJs.getTime() + 60 * 60 * 1000);
+  const pad = n => String(n).padStart(2, '0');
+  return {
+    endDate: `${endJs.getFullYear()}-${pad(endJs.getMonth() + 1)}-${pad(endJs.getDate())}`,
+    endTime: `${pad(endJs.getHours())}:${pad(endJs.getMinutes())}`
+  };
+}
+
+/**
+ * 🆕 v26.5.8c 일정의 종료 입력값을 정규화하고 검증.
+ *  - 빈 입력은 computeDefaultEnd 로 채움
+ *  - all-day 일정의 endTime 은 항상 빈 문자열로 강제
+ *  - 검증: 종료 < 시작 이면 toast 후 false 반환
+ *
+ * @returns {boolean} ok
+ */
+function applyAndValidateEnd(data) {
+  // 디폴트 보충
+  const def = computeDefaultEnd(data.date, data.time);
+  if (!data.endDate) data.endDate = def.endDate;
+  if (data.time) {
+    if (!data.endTime) data.endTime = def.endTime;
+  } else {
+    data.endTime = ''; // all-day
+  }
+  // 검증: 종료 < 시작
+  if (data.endDate < data.date) {
+    toast('종료일은 시작일과 같거나 그 이후여야 합니다'); return false;
+  }
+  if (data.endDate === data.date && data.time && data.endTime && data.endTime < data.time) {
+    toast('종료시각은 시작시각과 같거나 그 이후여야 합니다'); return false;
+  }
+  return true;
+}
+
+
+/**
  * 모달의 "저장" 버튼 클릭 핸들러.
  * 신규/편집/source 변경/🆕 반복 시리즈 처리를 모두 다룸.
  */
@@ -1562,13 +1617,19 @@ async function saveEvent() {
   // 폼 입력값을 객체로 묶음
   const data = {
     title,
-    date:   document.getElementById('evDate').value,
+    date:    document.getElementById('evDate').value,
     time,
-    source: document.getElementById('evSource').value,
-    memo:   document.getElementById('evMemo').value,
+    // 🆕 v26.5.8c 종료일/종료시각 (빈 입력은 applyAndValidateEnd 가 디폴트로 채움)
+    endDate: document.getElementById('evEndDate').value,
+    endTime: document.getElementById('evEndTime').value,
+    source:  document.getElementById('evSource').value,
+    memo:    document.getElementById('evMemo').value,
     // 시간이 없으면 알람도 없음 (종일 일정은 알람 불가)
     alarms: time ? Array.from(state.editingAlarms) : []
   };
+
+  // 🆕 v26.5.8c 종료 디폴트 보충 + 검증 (종료 < 시작 차단)
+  if (!applyAndValidateEnd(data)) return;
 
   // 🆕 어느 캘린더로 보낼지 (google/nextcloud일 때만)
   const calendarValue = document.getElementById('evCalendar').value;
@@ -1786,6 +1847,9 @@ async function saveRecurrenceEdit(ctx, formData, formRrule) {
         title: formData.title,
         date: formData.date,
         time: formData.time,
+        // 🆕 v26.5.8c 종료일/종료시각
+        endDate: formData.endDate,
+        endTime: formData.endTime,
         // 🆕 v26.5.8b 자식의 source 는 마스터 따라감 (NextCloud 마스터면 자식도 NextCloud)
         source: master.source,
         memo: formData.memo,
@@ -1803,6 +1867,9 @@ async function saveRecurrenceEdit(ctx, formData, formRrule) {
           title: formData.title,
           date: formData.date,
           time: formData.time,
+          // 🆕 v26.5.8c 종료일/종료시각
+          endDate: formData.endDate,
+          endTime: formData.endTime,
           memo: formData.memo,
           alarms: formData.alarms
           // source/recurrenceId/originalStart 그대로 유지 (마스터 따라가는 source 보존)
@@ -1844,6 +1911,9 @@ async function saveRecurrenceEdit(ctx, formData, formRrule) {
       title: formData.title,
       date: formData.date,
       time: formData.time,
+      // 🆕 v26.5.8c 종료일/종료시각
+      endDate: formData.endDate,
+      endTime: formData.endTime,
       // 🆕 v26.5.8b 새 마스터 source 도 원본 마스터 따라감
       source: master.source,
       memo: formData.memo,
@@ -1870,6 +1940,9 @@ async function saveRecurrenceEdit(ctx, formData, formRrule) {
       title: formData.title,
       date: formData.date,
       time: formData.time,
+      // 🆕 v26.5.8c 종료일/종료시각
+      endDate: formData.endDate,
+      endTime: formData.endTime,
       // 🆕 v26.5.8b source 는 마스터(원본) 그대로 유지
       memo: formData.memo,
       alarms: formData.alarms,
@@ -2223,8 +2296,13 @@ async function syncFromGoogle({ silent = false } = {}) {
         state.events.push(...(r.events || []));
       } else {
         // 증분: 삭제된 거 제거 + 변경된 거 upsert
+        // 🆕 v26.5.8d cascade — 마스터가 deletedIds 에 있으면 그 자식 인스턴스(recurrenceId === master.id)도 같이 정리
+        //   (Google 은 자식 모델 안 쓰지만 일관성 + 미래 안전을 위해)
         if (r.deletedIds?.length) {
-          state.events = state.events.filter(e => !r.deletedIds.includes(e.id));
+          state.events = state.events.filter(e =>
+            !r.deletedIds.includes(e.id) &&
+            !r.deletedIds.includes(e.recurrenceId)
+          );
         }
         (r.events || []).forEach(g => {
           const idx = state.events.findIndex(e => e.id === g.id);
@@ -2300,8 +2378,14 @@ async function syncFromNextcloud({ silent = false } = {}) {
       state.events.push(...(r.events || []));
     } else {
       // 증분 처리
+      // 🆕 v26.5.8d cascade — NextCloud 는 마스터/분리 인스턴스가 같은 ICS 묶음이라
+      //   서버에서 묶음 통째로 삭제 시 deletedIds 에는 마스터 ID 1개만 들어옴.
+      //   여기서 그 마스터의 자식들(recurrenceId === master.id)도 같이 정리해야 orphan 안 남음.
       if (r.deletedIds?.length) {
-        state.events = state.events.filter(e => !r.deletedIds.includes(e.id));
+        state.events = state.events.filter(e =>
+          !r.deletedIds.includes(e.id) &&
+          !r.deletedIds.includes(e.recurrenceId)
+        );
       }
       (r.events || []).forEach(g => {
         const idx = state.events.findIndex(e => e.id === g.id);

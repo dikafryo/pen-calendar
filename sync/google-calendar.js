@@ -1,4 +1,4 @@
-﻿// sync/google-calendar.js — Google Calendar 다중 캘린더 양방향 동기화
+// sync/google-calendar.js — Google Calendar 다중 캘린더 양방향 동기화
 // 변경점 (멀티 캘린더):
 //   - 'primary' 하드코딩 제거
 //   - googleAuth.getSelectedCalendars()로 동기화할 캘린더들 받음
@@ -33,6 +33,20 @@ function googleEventToLocal(gEvent, calendarId) {
     date = start.date;
   } else return null;
 
+  // 🆕 v26.5.8c 종료(end) 추출
+  //   - timed: end.dateTime 그대로 (KST 기준 endDate/endTime)
+  //   - all-day: end.date 는 exclusive 라 -1일 (inclusive 마지막 날)
+  let endDate = '', endTime = '';
+  const end = gEvent.end || {};
+  if (end.dateTime) {
+    const ed = new Date(end.dateTime);
+    endDate = formatDate(ed); endTime = formatTime(ed);
+  } else if (end.date) {
+    const next = new Date(end.date + 'T00:00:00');
+    next.setDate(next.getDate() - 1);
+    endDate = formatDate(next);
+  }
+
   const alarmSet = new Set();
   if (gEvent.reminders && gEvent.reminders.overrides) {
     gEvent.reminders.overrides.forEach(r => {
@@ -52,6 +66,8 @@ function googleEventToLocal(gEvent, calendarId) {
     etag: gEvent.etag,
     title: gEvent.summary || '(제목 없음)',
     date, time,
+    // 🆕 v26.5.8c 종료
+    endDate, endTime,
     source: 'google',
     alarms: [...alarmSet],
     memo: gEvent.description || '',
@@ -65,15 +81,30 @@ function localToGoogleEvent(local) {
     description: local.memo || ''
   };
   if (local.time) {
+    // timed: DTSTART = (date,time), DTEND = (endDate,endTime) 우선, 없으면 +1h
     const startDt = new Date(`${local.date}T${local.time}:00`);
-    const endDt = new Date(startDt.getTime() + 60 * 60 * 1000);
+    let endDt;
+    if (local.endDate && local.endTime) {
+      endDt = new Date(`${local.endDate}T${local.endTime}:00`);
+    } else {
+      endDt = new Date(startDt.getTime() + 60 * 60 * 1000);
+    }
     gEvent.start = { dateTime: startDt.toISOString(), timeZone: TIMEZONE };
     gEvent.end   = { dateTime: endDt.toISOString(),   timeZone: TIMEZONE };
   } else {
+    // all-day: Google end.date 도 exclusive — local.endDate (inclusive 마지막 날) 에 +1일
     gEvent.start = { date: local.date };
-    const next = new Date(local.date + 'T00:00:00');
-    next.setDate(next.getDate() + 1);
-    gEvent.end = { date: formatDate(next) };
+    let endIso;
+    if (local.endDate) {
+      const next = new Date(local.endDate + 'T00:00:00');
+      next.setDate(next.getDate() + 1);
+      endIso = formatDate(next);
+    } else {
+      const next = new Date(local.date + 'T00:00:00');
+      next.setDate(next.getDate() + 1);
+      endIso = formatDate(next);
+    }
+    gEvent.end = { date: endIso };
   }
   const overrides = (local.alarms || []).map(a => ({
     method: 'popup',
