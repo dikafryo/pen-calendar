@@ -302,6 +302,28 @@ function setupIPC() {
     mainWindow.webContents.focus();  // 그 안의 webContents에 focus
   });
 
+  // 🆕 v26.5.8e alwaysOnTop 위젯 모달 키보드 입력 우회 (a-fix1 후속)
+  //   증상: alwaysOnTop=true 인 topmost 윈도우는 클릭해도 OS-level focus 가
+  //         다른 앱(이전 활성 앱)에 머물러 키보드 입력이 우리 앱으로 안 들어옴.
+  //         (a-fix1의 focus-window 만으로는 해결 안 됨 — alwaysOnTop 자체를 잠시
+  //          내려놔야 OS 가 우리 윈도우를 정상적인 active window 로 인식)
+  //   - suspend=true  : alwaysOnTop OFF (store 안 건드림) + restore + focus 강제
+  //   - suspend=false : store 값으로 복원 (사용자가 OFF 로 설정 중이면 OFF 유지)
+  //   사용 위치: app.js openEventModal/closeEventModal 진입·이탈
+  ipcMain.handle('modal-aot-bypass', (e, suspend) => {
+    if (!mainWindow || mainWindow.isDestroyed()) return;
+    if (suspend) {
+      mainWindow.setAlwaysOnTop(false);
+      if (mainWindow.isMinimized()) mainWindow.restore();
+      mainWindow.focus();
+      mainWindow.webContents.focus();
+    } else {
+      // store 값 그대로 복원 — applyAlwaysOnTop 이 always-on-top-changed 이벤트도
+      // renderer 로 보내주므로 설정 패널 체크박스 상태도 자연 동기화됨.
+      applyAlwaysOnTop(store.get('alwaysOnTop'));
+    }
+  });
+
   ipcMain.handle('set-always-on-top', (e, enabled) => {
     store.set('alwaysOnTop', !!enabled);
     applyAlwaysOnTop(!!enabled);

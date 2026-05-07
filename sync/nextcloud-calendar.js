@@ -50,6 +50,38 @@ function icalTimeToDateStr(t) {
 }
 
 // ─────────────────────────────────────────────
+// 🆕 v26.5.8e ICAL.Time → "HH:MM" (KST 시각, all-day 마스터는 빈 문자열)
+//   icsToLocals 에서 분리 인스턴스의 RECURRENCE-ID 시각을 originalMasterTime 으로
+//   고정 저장하기 위한 헬퍼. 마스터 DTSTART 시각이 그 후 변경되어도 RECURRENCE-ID 는
+//   "처음 분리될 때의 마스터 시각" 그대로 유지되어야 NC 매칭 됨.
+//   - VALUE=DATE 인 RECURRENCE-ID (all-day 마스터) → '' 반환
+//   - UTC datetime → KST 변환
+//   - floating datetime → 그대로 (NC 표준에서 거의 안 나옴)
+// ─────────────────────────────────────────────
+function icalTimeToTimeStr(t) {
+  if (!t) return '';
+  if (typeof t === 'string') {
+    // raw 문자열 처리: "20260514T140000Z" 또는 "20260514T140000"
+    const dm = /^(\d{4})(\d{2})(\d{2})T(\d{2})(\d{2})(\d{2})(Z?)$/.exec(t.trim());
+    if (!dm) return '';
+    const [, y, mo, d, hh, mm, ss, z] = dm;
+    if (z === 'Z') {
+      const utcMs = Date.UTC(+y, +mo - 1, +d, +hh, +mm, +ss);
+      const kst = new Date(utcMs + 9 * 60 * 60 * 1000);
+      return `${pad2(kst.getUTCHours())}:${pad2(kst.getUTCMinutes())}`;
+    }
+    return `${hh}:${mm}`;
+  }
+  if (t.isDate) return ''; // VALUE=DATE → all-day, 시각 없음
+  try {
+    const js = t.toJSDate();
+    return formatTime(js); // KST 가정 환경에서 KST 시각
+  } catch {
+    return '';
+  }
+}
+
+// ─────────────────────────────────────────────
 // 🆕 v26.5.8b 단일 VEVENT → local 객체 (마스터/분리 인스턴스 공통 변환)
 //   - RRULE → local.recurrence (문자열)
 //   - EXDATE → local.exdates (["YYYY-MM-DD", ...])
@@ -202,6 +234,11 @@ function icsToLocals(rawIcs, url, etag, calendarUrl) {
         inst.id = master.id + '@' + originalStart;
         inst.recurrenceId = master.id;
         inst.originalStart = originalStart;
+        // 🆕 v26.5.8e RECURRENCE-ID 시각을 originalMasterTime 에 고정 저장.
+        //   마스터 DTSTART 시각이 그 후 변경되어도 NC 의 RECURRENCE-ID 와 매칭되도록
+        //   분리 인스턴스에 "처음 분리됐을 때의 마스터 시각" 을 박아둠.
+        //   all-day 마스터면 '' 빈 문자열 (RECURRENCE-ID;VALUE=DATE 구분).
+        inst.originalMasterTime = icalTimeToTimeStr(recIdValue);
         // 분리 인스턴스에 RRULE/EXDATE가 있어도 의미 없음 — 정리
         delete inst.recurrence;
         delete inst.exdates;
@@ -397,12 +434,20 @@ function localBundleToIcs({ master, instances = [] }) {
 
   for (const inst of (instances || [])) {
     if (!inst || !inst.originalStart) continue;
+    // 🆕 v26.5.8e RECURRENCE-ID 시각은 분리 인스턴스의 originalMasterTime 우선.
+    //   마스터 시각이 그 후 변경되어도 RECURRENCE-ID 는 "처음 분리될 때의 마스터 시각"
+    //   그대로 유지되어야 NC 서버의 분리 VEVENT 와 매칭됨.
+    //   - originalMasterTime 이 string (빈 문자열 포함) 이면 그 값 사용.
+    //     빈 문자열 = all-day 마스터 → RECURRENCE-ID;VALUE=DATE 로 나감.
+    //   - 없으면 master.time 으로 fallback (마이그레이션 호환 — 기존 분리 인스턴스).
+    const ridTime = (typeof inst.originalMasterTime === 'string')
+      ? inst.originalMasterTime
+      : (master.time || '');
     const { vevent: instVevent } = buildVevent(inst, {
       uid: masterUid,
       recurrenceId: {
         date: inst.originalStart,
-        // 마스터의 type/시각을 따라 RECURRENCE-ID 생성 (인스턴스 자신의 time 아님)
-        time: master.time || ''
+        time: ridTime
       },
       skipRecurrence: true,
       suppressCreated: true

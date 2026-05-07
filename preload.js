@@ -13,6 +13,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
   setAlwaysOnTop: (enabled) => ipcRenderer.invoke('set-always-on-top', enabled),
   getAlwaysOnTop: () => ipcRenderer.invoke('get-always-on-top'),
   focusWindow: () => ipcRenderer.invoke('focus-window'),
+  // 🆕 v26.5.8e 모달 진입·이탈에서 alwaysOnTop 임시 OFF/복원 (키보드 입력 우회)
+  modalAotBypass: (suspend) => ipcRenderer.invoke('modal-aot-bypass', suspend),
   
   // ── 영구 저장소 (electron-store) ────
   // 일정/메모/설정 모두 여기로 통합

@@ -100,6 +100,24 @@ const ALARM_MINUTES = { '5min': 5, '30min': 30, '1day': 24 * 60 };
 async function loadAll() {
   // 일정: 저장소에 없으면 샘플 일정 2개를 채워넣음
   state.events = (await loadJSON('cal_events_v4')) || getSampleEvents();
+
+  // 🆕 v26.5.8f orphan 분리 인스턴스 마이그레이션
+  //   v26.5.8e 이전: 마스터를 직접 삭제(첫 발생일 클릭)하면 자식 분리 인스턴스가
+  //   삭제되지 않고 남아 orphan 이 됨. 그 자식을 클릭하면 "마스터 일정을 찾을 수 없습니다" 오류.
+  //   여기서 한 번 정리. valid id 셋 = recurrenceId 없는(=마스터 또는 일반) 모든 이벤트의 id.
+  //   recurrenceId 가 그 셋에 없는 분리 인스턴스는 orphan → 제거.
+  const beforeCount = state.events.length;
+  const validMasterIds = new Set(
+    state.events.filter(e => !e.recurrenceId).map(e => e.id)
+  );
+  state.events = state.events.filter(e => !e.recurrenceId || validMasterIds.has(e.recurrenceId));
+  const orphansRemoved = beforeCount - state.events.length;
+  if (orphansRemoved > 0) {
+    console.log(`[v26.5.8f migration] orphan 분리 인스턴스 ${orphansRemoved}개 정리됨`);
+    // saveEvents() 는 alarm 재스케줄까지 하므로 state 초기화 끝나기 전엔 saveJSON 만 사용.
+    await saveJSON('cal_events_v4', state.events);
+  }
+
   // 메모: 마찬가지로 없으면 샘플
   state.memos  = (await loadJSON('cal_memos_v4')) || getSampleMemos();
 
@@ -1320,11 +1338,21 @@ function openEventModal(event, defaultDate) {
 
   updateAlarmChips();         // 칩 disabled/active 상태 갱신
   updateRecurrenceUiVisibility();   // 🆕 반복 종료 옵션 표시 상태 갱신
+
+  // 🆕 v26.5.8e alwaysOnTop 임시 OFF + focus 강제 (키보드 입력 우회).
+  //   bg.classList.add('show') 직전에 호출해 모달이 보이는 시점엔
+  //   이미 OS-level focus 가 우리 윈도우에 있도록.
+  //   fire-and-forget — 실패해도 무해 (아래 setTimeout focusWindow fallback).
+  if (isElectron && window.electronAPI.modalAotBypass) {
+    window.electronAPI.modalAotBypass(true).catch(() => {});
+  }
+
   bg.classList.add('show');   // 모달 표시
 
   // 🔧 v26.5.8a-fix1: native window focus를 먼저 강제한 뒤 element focus
   // alwaysOnTop 위젯이 background 상태에서 모달을 열 때
   // JS focus만으로는 키보드 입력이 안 들어오는 문제 해결.
+  // (v26.5.8e 의 modalAotBypass 가 본 해결책. focusWindow 는 fallback 으로 유지)
   setTimeout(async () => {
     if (isElectron && window.electronAPI.focusWindow) {
       try { await window.electronAPI.focusWindow(); } catch {}
@@ -1338,6 +1366,10 @@ function closeEventModal() {
   document.getElementById('eventModalBg').classList.remove('show');
   state.editingEventId = null;
   state.editingInstanceContext = null;   // 🆕 v26.5.8a
+  // 🆕 v26.5.8e alwaysOnTop 복원 (사용자 store 설정값 그대로)
+  if (isElectron && window.electronAPI.modalAotBypass) {
+    window.electronAPI.modalAotBypass(false).catch(() => {});
+  }
 }
 
 /**
@@ -1855,7 +1887,11 @@ async function saveRecurrenceEdit(ctx, formData, formRrule) {
         memo: formData.memo,
         alarms: formData.alarms,
         recurrenceId: master.id,
-        originalStart: ctx.instanceDate
+        originalStart: ctx.instanceDate,
+        // 🆕 v26.5.8e RECURRENCE-ID 시각 매칭용 — 처음 분리될 때 마스터의 시각 박아둠.
+        //   이후 마스터 시각이 변경되어도 NC 의 RECURRENCE-ID 와 매칭되도록 고정.
+        //   all-day 마스터면 '' (RECURRENCE-ID;VALUE=DATE 로 나감)
+        originalMasterTime: master.time || ''
       };
       state.events.push(detached);
     } else {
@@ -2069,8 +2105,19 @@ async function deleteEvent() {
     }
   }
 
-  // 로컬에서 제거
-  state.events = state.events.filter(e => e.id !== state.editingEventId);
+  // 🆕 v26.5.8f 마스터(반복 일정) 직접 삭제 시 자식 분리 인스턴스도 cascade
+  //   반복 시리즈의 첫 발생일(= master.date)을 클릭하면 ctx=null 로 이 분기에 들어옴
+  //   (expandRecurrencesForRange 가 master.date 위치엔 가상 인스턴스를 만들지 않음).
+  //   이 케이스에서 마스터만 지우고 자식(recurrenceId)을 안 지우면 orphan 발생 →
+  //   사용자가 그 자식을 다시 누르면 "마스터 일정을 찾을 수 없습니다" 오류.
+  //   ctx 분기의 'all' 과 동일하게 자식까지 같이 정리.
+  if (ev && ev.recurrence) {
+    state.events = state.events.filter(e =>
+      e.id !== state.editingEventId && e.recurrenceId !== state.editingEventId
+    );
+  } else {
+    state.events = state.events.filter(e => e.id !== state.editingEventId);
+  }
   await saveEvents();
   closeEventModal();
   renderCalendar();
