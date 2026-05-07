@@ -459,10 +459,17 @@ async function syncOne(client, allDavCalendars, calendarUrl) {
     // etagMap은 UID 기준 1개 (분리 인스턴스도 같은 ICS URL/etag 공유)
     const masterUid = locals[0].ncUid;
     seen.add(masterUid);
-    newMap[masterUid] = { url: o.url, etag: o.etag };
+    // 🆕 v26.5.8e 분리 인스턴스 ID들도 같이 추적 (자식 ID diff cleanup 용)
+    //   - 다음 sync에서 이 ICS가 변경되었을 때, 사라진 자식 인스턴스를
+    //     deletedIds에 정확히 포함시키기 위함.
+    //   - app.js cascade(v26.5.8d)는 마스터 자체가 사라진 케이스만 커버함 →
+    //     마스터는 살아있고 자식만 단독 삭제(EXDATE 추가)된 케이스 보완.
+    const childIds = [];
     for (const local of locals) {
       events.push(local);
+      if (local.recurrenceId) childIds.push(local.id);
     }
+    newMap[masterUid] = { url: o.url, etag: o.etag, childIds };
   }
 
   const key = urlKey(calendarUrl);
@@ -475,10 +482,29 @@ async function syncOne(client, allDavCalendars, calendarUrl) {
     // 처음 동기화 = 전체
     isFull = true;
   } else {
-    // 증분: 이전엔 있었는데 지금은 없는 = 삭제됨
+    // 증분: 이전엔 있었는데 지금은 없는 = 삭제됨 (마스터 ID 기준)
     deletedIds = Object.keys(prevMap)
       .filter(uid => !seen.has(uid))
       .map(uid => 'nc_' + Buffer.from(calendarUrl).toString('base64').slice(0, 12) + '_' + uid);
+
+    // 🆕 v26.5.8e 자식 ID diff cleanup — 마스터는 남아있고 자식만 사라진 케이스
+    //   시나리오: NextCloud 웹에서 분리 인스턴스 1개 단독 삭제
+    //     → 마스터 ICS의 EXDATE 추가 + 해당 자식 VEVENT 제거 (etag 변경됨)
+    //     → 이전 prevMap[uid].childIds 와 새 newMap[uid].childIds 비교해
+    //       사라진 자식 ID 들을 deletedIds 에 추가.
+    //   마이그레이션 안전: 기존 store 에 childIds 없는 항목은 빈 배열 처리.
+    //     첫 sync 한 번은 자식 diff 작동 안 하지만 그 다음부터 정상.
+    for (const uid of Object.keys(prevMap)) {
+      if (!seen.has(uid)) continue; // 마스터 자체 삭제는 위 로직 + app.js cascade에 맡김
+      const prevEntry = prevMap[uid] || {};
+      const prevChildren = Array.isArray(prevEntry.childIds) ? prevEntry.childIds : [];
+      if (prevChildren.length === 0) continue;
+      const nextChildren = (newMap[uid] && newMap[uid].childIds) || [];
+      const nextSet = new Set(nextChildren);
+      for (const cid of prevChildren) {
+        if (!nextSet.has(cid)) deletedIds.push(cid);
+      }
+    }
 
     // 변경된 것만 추리기 (etag 비교)
     if (!isFull) {
@@ -593,9 +619,17 @@ async function pushEvent(local, options = {}) {
   }
 
   // etagMap 갱신 — UID 기준 1개 (분리 인스턴스도 같은 url/etag 공유)
+  // 🆕 v26.5.8e childIds 도 같이 저장 — 다음 sync 의 자식 ID diff 정확도 위해.
+  //   push 시점의 분리 인스턴스 ID 들 (master.id + '@' + originalStart 형식).
+  //   push 와 다음 sync 사이에 NC 웹에서 자식 단독 삭제가 일어나도 detect 가능.
+  const masterIdPrefix = 'nc_' + Buffer.from(calendarUrl).toString('base64').slice(0, 12) + '_';
+  const pushedChildIds = detachedInstances
+    .filter(i => i && i.originalStart)
+    .map(i => masterIdPrefix + uid + '@' + i.originalStart);
+
   const key = urlKey(calendarUrl);
   const map = syncStore.get(key) || {};
-  map[uid] = { url: resultUrl, etag: resultEtag };
+  map[uid] = { url: resultUrl, etag: resultEtag, childIds: pushedChildIds };
   syncStore.set(key, map);
 
   return {
