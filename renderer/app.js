@@ -567,13 +567,22 @@ function renderCalendar() {
       showDayPopover(cell, d);
     });
 
-    // ── 더블클릭: 새 일정 추가 모달 열기 ──
+    // ── 더블클릭: 빈 영역 → 새 일정 / 일정 위 → 편집 모달 ──
     cell.addEventListener('dblclick', (ev) => {
       ev.stopPropagation();
       hideContextMenu();
       document.getElementById('settingsPanel').classList.remove('show');
       hideDayPopover();
-      openEventModal(null, d);   // null=신규 일정, d=해당 날짜 기본값
+
+      // 🆕 v26.5.8h 일정 항목 위에서 더블클릭 → 그 일정 편집 모달
+      //   (빈 셀 영역 더블클릭은 기존대로 신규 일정 추가)
+      const eventEl = ev.target.closest('.day-event');
+      if (eventEl && eventEl.dataset.id) {
+        const target = dayEvents.find(e => e.id === eventEl.dataset.id);
+        if (target) { openEventModal(target); return; }
+      }
+
+      openEventModal(null, d);   // 빈 영역 → 신규 일정 (d=해당 날짜 기본값)
     });
 
     grid.appendChild(cell);
@@ -2807,25 +2816,48 @@ document.getElementById('todayBtn').addEventListener('click', () => {
 });
 
 
-// ─── 마우스 휠로 주 단위 이동 ───
-// 캘린더 영역에서 휠 굴리면 한 주씩 이동. 너무 빨라서 화면이 헷갈리지 않게
-// 250ms throttle (lastWheelTime으로 구현).
-let lastWheelTime = 0;
+// ─── 마우스 휠로 주 단위 이동 (🆕 v26.5.8h 가속 스크롤) ───
+// 휠 1단(deltaY≈100) ≈ 1주, 빠르게 굴려 한번에 큰 deltaY 가 오면 비례해서 여러 주 점프.
+// deltaY 를 픽셀 단위로 정규화한 뒤 누적, 임계치(DELTA_PER_WEEK)를 넘을 때마다 1주씩 이동.
+// requestAnimationFrame 으로 렌더링 한 프레임당 1번으로 묶어 빠른 스크롤에도 폭주 안 함.
+const DELTA_PER_WEEK = 100;   // 휠 1단(보통 deltaY=100~120) ≈ 1주 이동
+let wheelAccumulator = 0;
+let wheelRenderScheduled = false;
+
 document.querySelector('.calendar').addEventListener('wheel', (e) => {
   e.preventDefault();   // 페이지 스크롤 막기
 
-  const now = Date.now();
-  if (now - lastWheelTime < 250) return;   // 아직 250ms 안 지남
-  lastWheelTime = now;
+  // deltaMode 정규화: LINE(1)→픽셀, PAGE(2)→픽셀
+  let delta = e.deltaY;
+  if (e.deltaMode === 1) delta *= 33;        // LINE → ~33px/line
+  else if (e.deltaMode === 2) delta *= 400;  // PAGE → 대략
 
-  // 휠 작은 떨림(트랙패드 등)은 무시
-  if (Math.abs(e.deltaY) < 5) return;
+  // 너무 작은 떨림(트랙패드 등) 무시
+  if (Math.abs(delta) < 1) return;
+
+  // 방향이 바뀌면 누적 리셋 — 위↔아래 전환을 즉각 반영
+  if ((wheelAccumulator > 0 && delta < 0) || (wheelAccumulator < 0 && delta > 0)) {
+    wheelAccumulator = 0;
+  }
+  wheelAccumulator += delta;
+
+  // 누적 / 임계치 = 이동할 주 수 (절댓값 기준 trunc, 부호 보존)
+  const weeks = Math.trunc(wheelAccumulator / DELTA_PER_WEEK);
+  if (weeks === 0) return;
+  wheelAccumulator -= weeks * DELTA_PER_WEEK;
 
   state.viewWeekStart = new Date(state.viewWeekStart);
-  // 휠 아래(+)는 다음 주, 위(-)는 이전 주
-  state.viewWeekStart.setDate(state.viewWeekStart.getDate() + (e.deltaY > 0 ? 7 : -7));
-  renderCalendar();
-  debouncedEnsureRangeSynced();   // 🆕
+  state.viewWeekStart.setDate(state.viewWeekStart.getDate() + weeks * 7);
+
+  // 한 프레임에 한 번만 렌더 — 빠른 스크롤 폭주 방지
+  if (!wheelRenderScheduled) {
+    wheelRenderScheduled = true;
+    requestAnimationFrame(() => {
+      wheelRenderScheduled = false;
+      renderCalendar();
+      debouncedEnsureRangeSynced();
+    });
+  }
 }, { passive: false });   // preventDefault 쓰려면 passive: false 필수
 
 
