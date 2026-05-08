@@ -125,9 +125,16 @@ async function loadAll() {
   const settings = await loadJSON('cal_settings_v4');
   if (settings) Object.assign(state, settings);
 
+  // 🆕 v26.5.8i 'emphasis' (가로 압축) 레이아웃 폐기 → 'split' 로 마이그레이션.
+  //   사용자 요청으로 'emphasis' 카드를 'week' (주간 일정) 카드로 교체.
+  //   기존에 emphasis 로 저장돼 있던 사용자는 split 으로 보정.
+  if (state.layout === 'emphasis') state.layout = 'split';
+  // 알 수 없는 layout 값(혹은 신버전 → 구버전 다운그레이드) 안전망
+  if (!['uniform', 'split', 'week'].includes(state.layout)) state.layout = 'split';
+
   // 레이아웃에 따라 주 시작 요일 자동 결정
   // - uniform: 일요일 시작 (전통적인 한국 캘린더)
-  // - emphasis/split: 월요일 시작 (주말이 한쪽에 모이도록)
+  // - split/week: 월요일 시작 (주말이 한쪽에 모이도록)
   state.weekStartsOn = state.layout === 'uniform' ? 0 : 1;
 
   // 잠금 상태는 메인 프로세스의 electron-store에서 가져옴
@@ -320,6 +327,10 @@ setInterval(scheduleAlarms, 24 * 60 * 60 * 1000);
  * 예) referenceDate = 5/15(목), 월요일 시작
  *     → 이번 주 시작 = 5/12(월)
  *     → 5주 그리드 시작 = 5/5(월) ← 화면 좌상단 셀
+ *
+ * 🆕 v26.5.8i week (주간 일정) 모드: 화면이 2주뿐이라 한 주 위에서 시작하면
+ *     referenceDate 가 둘째 주에 박혀서 어색함. 그래서 week 모드는 -7일 안 함
+ *     (= 이번 주가 첫째 주에 위치, 다음 주가 둘째 주).
  */
 function compute5WeekStart(referenceDate) {
   const d = new Date(referenceDate);
@@ -327,22 +338,37 @@ function compute5WeekStart(referenceDate) {
   let diff = d.getDay() - state.weekStartsOn;            // 주 시작에서 며칠이 지났나
   if (diff < 0) diff += 7;                              // 음수 보정 (일요일에 월요일 시작이면 -1)
   d.setDate(d.getDate() - diff);                        // 이번 주 시작으로
+  if (state.layout === 'week') return d;                // 🆕 week 모드: 이번 주 = 첫째 주
   d.setDate(d.getDate() - 7);                           // 이전 주 시작으로 (한 주 더 위로)
   return d;
 }
 
 /**
- * 5주(35일) 날짜 배열 반환. viewWeekStart부터 35일 연속.
+ * 보이는 영역의 날짜 배열 반환. viewWeekStart부터 N일 연속.
+ * - uniform / split: 35일 (5주)
+ * - week: 14일 (2주, 🆕 v26.5.8i 주간 일정 모드)
  * renderCalendar에서 셀을 그릴 때 사용.
  */
 function getViewDates() {
+  const numDays = state.layout === 'week' ? 14 : 35;
   const dates = [];
-  for (let i = 0; i < 35; i++) {
+  for (let i = 0; i < numDays; i++) {
     const d = new Date(state.viewWeekStart);
     d.setDate(state.viewWeekStart.getDate() + i);
     dates.push(d);
   }
   return dates;
+}
+
+/**
+ * 🆕 v26.5.8i 보이는 영역의 "가운데 날짜" 반환. 헤더 라벨/월 단위 점프 등에서 사용.
+ * - uniform / split (5주, 35일): viewWeekStart + 17일 (≈ 3주차 중간)
+ * - week (2주, 14일):           viewWeekStart + 7일  (≈ 둘째 주 시작)
+ */
+function getViewCenter() {
+  const c = new Date(state.viewWeekStart);
+  c.setDate(state.viewWeekStart.getDate() + (state.layout === 'week' ? 7 : 17));
+  return c;
 }
 
 
@@ -383,7 +409,7 @@ function renderWeekdays() {
     return;
   }
 
-  // ── uniform / emphasis 모드: 7칸 ──
+  // ── uniform / week 모드: 7칸 ──
   // weekStartsOn에 따라 시작 요일이 다름. order 배열로 인덱스 회전.
   const order = [];
   for (let i = 0; i < 7; i++) order.push((state.weekStartsOn + i) % 7);
@@ -392,9 +418,6 @@ function renderWeekdays() {
     let cls = '';
     if (idx === 0) cls = 'sun';   // 일요일 → 빨강
     if (idx === 6) cls = 'sat';   // 토요일 → 파랑
-    const isWeekend = idx === 0 || idx === 6;
-    // emphasis 모드에서는 주말 칸을 좁게(compact)
-    if (state.layout === 'emphasis' && isWeekend) cls += ' compact';
     return `<div class="weekday ${cls}">${DOW[idx]}</div>`;
   }).join('');
 }
@@ -406,9 +429,8 @@ function renderWeekdays() {
 function renderHeader() {
   const today = new Date();
 
-  // 5주 그리드의 가운데 날짜 (시작일 + 17일 ≈ 3주차 중간)
-  const center = new Date(state.viewWeekStart);
-  center.setDate(state.viewWeekStart.getDate() + 17);
+  // 🆕 v26.5.8i 그리드 가운데 날짜 (모드별: 5주는 +17일, 2주는 +7일)
+  const center = getViewCenter();
 
   document.getElementById('yearLabel').textContent  = center.getFullYear() + '년';
   document.getElementById('monthLabel').textContent = MONTHS[center.getMonth()];
@@ -447,17 +469,17 @@ function renderCalendar() {
 
   // ── 그리드 가운데 날짜의 월 = 현재 보고 있는 달 ──
   // 이 월에 속하지 않는 셀은 흐리게(other-month) 처리
-  const center = new Date(state.viewWeekStart);
-  center.setDate(state.viewWeekStart.getDate() + 17);
+  const center = getViewCenter();
   const viewMonth = center.getMonth();
 
-  const dates = getViewDates();   // 35일치 Date 배열
+  const dates = getViewDates();   // 🆕 v26.5.8i 모드별: uniform/split=35일, week=14일
 
-  // 🆕 v26.5.8a 5주 윈도우 안의 가상 반복 인스턴스 미리 펼치기 → 날짜별 캐시
+  // 🆕 v26.5.8a 보이는 윈도우 안의 가상 반복 인스턴스 미리 펼치기 → 날짜별 캐시
+  //    윈도우 길이는 모드에 따라 다름 (35 또는 14일).
   const _rangeStart = new Date(state.viewWeekStart);
   _rangeStart.setHours(0, 0, 0, 0);
   const _rangeEnd = new Date(state.viewWeekStart);
-  _rangeEnd.setDate(state.viewWeekStart.getDate() + 35);
+  _rangeEnd.setDate(state.viewWeekStart.getDate() + (state.layout === 'week' ? 14 : 35));
   _rangeEnd.setHours(0, 0, 0, 0);
   const eventsByDate = buildEventsByDateMap(_rangeStart, _rangeEnd);
 
@@ -472,12 +494,12 @@ function renderCalendar() {
     if (d.getMonth() !== viewMonth) cell.classList.add('other-month');   // 이전/다음 달
 
     // 레이아웃별 셀 변형:
-    // - compact: emphasis 모드의 주말 (좁고 도트만 표시)
-    // - half:    split 모드의 토/일 (반쪽짜리)
+    // - half: split 모드의 토/일 (반쪽짜리)
+    // 🆕 v26.5.8i emphasis (가로 압축) 모드 폐기 → isCompact 는 사실상 죽음.
+    //   week 모드는 7×2 균등 그리드라 별도 변형 불필요 (CSS .days.week 에서 처리).
     const isWeekend = dow === 0 || dow === 6;
-    const isCompact = state.layout === 'emphasis' && isWeekend;
-    const isHalf    = state.layout === 'split'    && isWeekend;
-    if (isCompact) cell.classList.add('compact');
+    const isCompact = false;   // (구 emphasis 모드 잔재 자리. 코드 호환 위해 변수만 유지)
+    const isHalf    = state.layout === 'split' && isWeekend;
     if (isHalf)    cell.classList.add('half');
 
     // ── split 모드: 그리드 위치 직접 지정 ──
@@ -518,7 +540,11 @@ function renderCalendar() {
     const hasAlarm = dayEvents.some(e => e.alarms && e.alarms.length > 0);
 
     // 셀 크기에 따라 최대 표시 일정 수
-    const maxEvents = isCompact ? 0 : (isHalf ? 1 : 4);
+    // 🆕 v26.5.8i week 모드는 셀이 2.5배 크니 더 많이 표시 (10개)
+    const maxEvents = isCompact ? 0
+                    : isHalf ? 1
+                    : state.layout === 'week' ? 10
+                    : 4;
 
     // ── 일정 텍스트 HTML 만들기 ──
     let eventHtml = '';
@@ -2788,9 +2814,8 @@ document.getElementById('nextWeek').addEventListener('click', () => {
 });
 
 document.getElementById('prevMonth').addEventListener('click', () => {
-  // 이전 달: 그리드 가운데 날짜의 월을 -1, 그 후 5주 시작점 재계산
-  const center = new Date(state.viewWeekStart);
-  center.setDate(state.viewWeekStart.getDate() + 17);
+  // 이전 달: 그리드 가운데 날짜의 월을 -1, 그 후 시작점 재계산
+  const center = getViewCenter();
   center.setMonth(center.getMonth() - 1);
   state.viewWeekStart = compute5WeekStart(center);
   renderCalendar();
@@ -2799,8 +2824,7 @@ document.getElementById('prevMonth').addEventListener('click', () => {
 
 document.getElementById('nextMonth').addEventListener('click', () => {
   // 다음 달: 동일 패턴, 월을 +1
-  const center = new Date(state.viewWeekStart);
-  center.setDate(state.viewWeekStart.getDate() + 17);
+  const center = getViewCenter();
   center.setMonth(center.getMonth() + 1);
   state.viewWeekStart = compute5WeekStart(center);
   renderCalendar();
@@ -2936,14 +2960,14 @@ document.querySelectorAll('.memo-tab').forEach(tab => {
 });
 
 
-// ─── 레이아웃 카드 (균일/가로압축/세로분할) 클릭 ───
+// ─── 레이아웃 카드 (🆕 v26.5.8i 균일/주말 압축/주간 일정) 클릭 ───
 document.querySelectorAll('.layout-card').forEach(card => {
   card.addEventListener('click', async () => {
     state.layout = card.dataset.layout;
     applyLayout();
     await saveSettings();
-    const names = { uniform: '균일 모드', emphasis: '가로 압축 모드', split: '세로 분할 모드' };
-    toast(names[state.layout]);
+    const names = { uniform: '균일 모드', split: '주말 압축 모드', week: '주간 일정 모드' };
+    toast(names[state.layout] || '레이아웃 변경');
   });
 });
 

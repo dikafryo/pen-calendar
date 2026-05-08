@@ -214,6 +214,9 @@ body {
   grid-template-columns: repeat(5, 1fr) 1fr;
   grid-template-rows: repeat(10, 1fr);
 }
+/* 🆕 v26.5.8i 주간 일정 모드 — 2주 × 7일 균등 그리드 (셀이 5주 모드보다 2.5배 큼) */
+.weekdays.week, .days.week { grid-template-columns: repeat(7, 1fr); }
+.days.week { grid-auto-rows: 1fr; }
 
 .day {
   background: linear-gradient(145deg,
@@ -782,6 +785,11 @@ body {
   grid-template-rows: 1fr 1fr;
 }
 .layout-preview.split span:not(.weekend) { grid-row: span 2; }
+/* 🆕 v26.5.8i 주간 일정 미리보기 — 7×2 그리드 */
+.layout-preview.week {
+  grid-template-columns: repeat(7, 1fr);
+  grid-template-rows: 1fr 1fr;
+}
 .layout-preview span { background: #b8d4ff; border-radius: 1px; }
 .layout-preview span.weekend { background: #d4dde8; }
 
