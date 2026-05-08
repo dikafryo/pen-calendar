@@ -623,6 +623,43 @@ body {
 }
 .rec-hint:empty { display: none; }
 
+/* 🆕 v26.5.8k WEEKLY 다중 요일 선택 토글 */
+.weekly-days-row {
+  display: flex;
+  gap: 4px;
+  margin-top: 6px;
+  flex-wrap: wrap;
+}
+.weekday-toggle {
+  flex: 1;
+  min-width: 32px;
+  padding: 6px 0;
+  font-size: 11px;
+  border: 1px solid #d0d0d0;
+  background: #fff;
+  color: #555;
+  border-radius: 6px;
+  cursor: pointer;
+  transition: background 0.12s, color 0.12s, border-color 0.12s;
+}
+.weekday-toggle:hover:not(:disabled) {
+  border-color: #4285f4;
+  color: #4285f4;
+}
+.weekday-toggle.active {
+  background: #4285f4;
+  border-color: #4285f4;
+  color: #fff;
+}
+.weekday-toggle:disabled {
+  cursor: default;
+  opacity: 0.85;
+}
+.weekday-toggle.active:disabled {
+  background: #6ea2f3;
+  border-color: #6ea2f3;
+}
+
 /* 반복 일정 인스턴스 마커 (셀의 일정에 작은 🔁 아이콘) */
 .day-event .recurrence-mark {
   display: inline-block;

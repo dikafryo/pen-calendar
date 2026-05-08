@@ -291,7 +291,9 @@
       <select id="evCalendar"></select>
     </div>
 
-    <!-- 🆕 v26.5.8a 반복 옵션 / v26.5.8j MONTHLY BYDAY 모드 추가 -->
+    <!-- 🆕 v26.5.8a 반복 옵션 -->
+    <!-- 🆕 v26.5.8j MONTHLY BYDAY 모드 추가 -->
+    <!-- 🆕 v26.5.8k WEEKLY BYDAY (다중 요일 토글) 추가 -->
     <label>반복</label>
     <div class="recurrence-row">
       <select id="evRecurrenceFreq">
@@ -308,6 +310,17 @@
         <option value="byday">주차로 반복</option>
         <option value="bydaylast">마지막 주차로 반복</option>
       </select>
+    </div>
+    <!-- 🆕 v26.5.8k WEEKLY 일 때만 보이는 요일 선택 토글 -->
+    <!-- 시작일 요일은 자동 active+disabled (= 첫 발생 보장) -->
+    <div id="evRecurrenceWeeklyDays" class="weekly-days-row" style="display:none">
+      <button type="button" class="weekday-toggle" data-dow="0">일</button>
+      <button type="button" class="weekday-toggle" data-dow="1">월</button>
+      <button type="button" class="weekday-toggle" data-dow="2">화</button>
+      <button type="button" class="weekday-toggle" data-dow="3">수</button>
+      <button type="button" class="weekday-toggle" data-dow="4">목</button>
+      <button type="button" class="weekday-toggle" data-dow="5">금</button>
+      <button type="button" class="weekday-toggle" data-dow="6">토</button>
     </div>
 
     <div id="evRecurrenceEndRow" style="display:none">

@@ -938,7 +938,9 @@ function calDisplayName(c, source) {
 
 
 // ╔══════════════════════════════════════════════════════════════════╗
-// ║  🆕 v26.5.8a 반복 일정 (RRULE) 헬퍼들 / v26.5.8j BYDAY 추가          ║
+// ║  🆕 v26.5.8a 반복 일정 (RRULE) 헬퍼들                              ║
+// ║  🆕 v26.5.8j MONTHLY BYDAY (단일 토큰) 추가                        ║
+// ║  🆕 v26.5.8k WEEKLY BYDAY (다중 토큰) 추가                         ║
 // ║                                                                  ║
 // ║  - parseRrule:     "FREQ=WEEKLY;COUNT=10" → { freq, interval, ...} ║
 // ║  - buildRrule:     반대 방향                                       ║
@@ -947,16 +949,24 @@ function calDisplayName(c, source) {
 // ║                                                                  ║
 // ║  지원하는 RRULE 부분:                                              ║
 // ║   - FREQ:     DAILY / WEEKLY / MONTHLY / YEARLY                  ║
-// ║   - INTERVAL: 1~99 (예: INTERVAL=2 + WEEKLY = 격주)               ║
+// ║   - INTERVAL: 1~99                                               ║
 // ║   - COUNT:    N회 반복                                            ║
 // ║   - UNTIL:    YYYYMMDD 또는 YYYYMMDDTHHMMSSZ 형식                 ║
-// ║   - 🆕 BYDAY: MONTHLY 한정, 단일 ordinal+요일                      ║
-// ║              예: BYDAY=3TH (셋째 주 목요일), BYDAY=-1FR (마지막 금) ║
+// ║   - BYDAY (MONTHLY): 단일 ordinal+요일                            ║
+// ║       예: 3TH (셋째 주 목요일), -1FR (마지막 금요일)                 ║
+// ║       → r.byday = { ordinal, dow }                              ║
+// ║   - 🆕 BYDAY (WEEKLY): 다중 요일 (ordinal 없는 토큰만)              ║
+// ║       예: MO,WE,FR (매주 월·수·금)                                  ║
+// ║       → r.bydays = [1, 3, 5]  (dow 인덱스 정렬, 중복 제거)         ║
+// ║       시작일 요일은 자동 포함 (사용자 시작일이 첫 발생이 되도록)        ║
 // ║                                                                  ║
-// ║  v26.5.8j 에선 BYDAY 는 MONTHLY+단일 토큰만. 여러 BYDAY (예:       ║
-// ║  매주 화/목) 같은 WEEKLY+BYDAY 조합은 미지원. 향후 확장.            ║
-// ║  Google 은 recurrence push 안 함, NextCloud 는 ICAL.Recur 가      ║
-// ║  BYDAY 를 그대로 통과시키므로 sync 레이어 추가 변경 불필요.          ║
+// ║  v26.5.8k 시점 미지원:                                             ║
+// ║   - MONTHLY 다중 BYDAY (예: 1MO,3MO)                              ║
+// ║   - BYMONTHDAY, BYSETPOS, BYMONTH 등                              ║
+// ║                                                                  ║
+// ║  Google: recurrence push 안 함 (영향 없음).                        ║
+// ║  NextCloud: ICAL.Recur 가 BYDAY 다중 토큰을 그대로 통과시키고,      ║
+// ║   normalizeRruleForIcal/FromIcal 도 UNTIL 만 손대므로 변경 불필요.  ║
 // ╚══════════════════════════════════════════════════════════════════╝
 
 const RRULE_FREQS = ['DAILY', 'WEEKLY', 'MONTHLY', 'YEARLY'];
@@ -1031,8 +1041,9 @@ function isLastWeekdayOfMonth(date) {
 /**
  * RRULE 문자열 파싱.
  * @param {string} str  "FREQ=WEEKLY;COUNT=10" 같은 형식
- * @returns {object|null}  { freq, interval, count, until, byday }, 잘못된 형식이면 null
- *   byday: null | { ordinal, dow } — MONTHLY 단일 토큰만 인식
+ * @returns {object|null}  { freq, interval, count, until, byday, bydays }, 잘못된 형식이면 null
+ *   byday:  null | { ordinal, dow }   — MONTHLY 단일 ordinal+요일
+ *   bydays: null | number[]            — 🆕 v26.5.8k WEEKLY 다중 요일 (ordinal 없는 토큰)
  */
 function parseRrule(str) {
   if (!str || typeof str !== 'string') return null;
@@ -1053,7 +1064,8 @@ function parseRrule(str) {
     interval: Math.max(1, parseInt(parts.INTERVAL || '1', 10) || 1),
     count: null,
     until: null,
-    byday: null   // 🆕 v26.5.8j
+    byday: null,    // 🆕 v26.5.8j MONTHLY 단일 ordinal+요일
+    bydays: null    // 🆕 v26.5.8k WEEKLY 다중 요일 (ordinal 없는 토큰만)
   };
 
   if (parts.COUNT) {
@@ -1065,28 +1077,42 @@ function parseRrule(str) {
     const m = /^(\d{4})(\d{2})(\d{2})/.exec(parts.UNTIL);
     if (m) out.until = `${m[1]}-${m[2]}-${m[3]}`;
   }
-  // 🆕 v26.5.8j BYDAY 인식 — MONTHLY + 단일 토큰 + ordinal 있을 때만 의미 있는 것으로 간주.
-  //   (여러 토큰: "MO,TU,WE" 같은 WEEKLY 패턴은 v26.5.8j 범위 밖 — 무시 = passthrough)
-  if (parts.BYDAY && out.freq === 'MONTHLY' && !parts.BYDAY.includes(',')) {
-    const tok = parseBydayToken(parts.BYDAY);
-    if (tok && tok.ordinal != null) out.byday = tok;
+  // 🆕 v26.5.8j MONTHLY 단일 ordinal+요일  (예: BYDAY=3TH, -1FR)
+  // 🆕 v26.5.8k WEEKLY 다중 요일          (예: BYDAY=MO,WE,FR)
+  // 그 외 패턴(MONTHLY 다중, WEEKLY+ordinal 혼재 등)은 미지원 — 무시.
+  if (parts.BYDAY) {
+    const tokens = parts.BYDAY.split(',').map(s => parseBydayToken(s)).filter(t => t);
+    if (out.freq === 'MONTHLY' && tokens.length === 1 && tokens[0].ordinal != null) {
+      out.byday = tokens[0];
+    } else if (out.freq === 'WEEKLY' && tokens.length >= 1 && tokens.every(t => t.ordinal == null)) {
+      const set = new Set(tokens.map(t => t.dow));
+      out.bydays = [...set].sort((a, b) => a - b);
+    }
   }
   return out;
 }
 
 /**
  * 파싱된 RRULE 객체를 다시 문자열로.
- * @param {object} r  { freq, interval, count, until, byday }
+ * @param {object} r  { freq, interval, count, until, byday, bydays }
  * @returns {string}
  */
 function buildRrule(r) {
   if (!r || !RRULE_FREQS.includes(r.freq)) return '';
   const parts = [`FREQ=${r.freq}`];
   if (r.interval && r.interval > 1) parts.push(`INTERVAL=${r.interval}`);
-  // 🆕 v26.5.8j BYDAY (MONTHLY 한정으로 의미 있음)
+  // 🆕 v26.5.8j MONTHLY 단일 ordinal+요일
   if (r.byday && r.freq === 'MONTHLY') {
     const tok = buildBydayToken(r.byday.ordinal, r.byday.dow);
     if (tok) parts.push(`BYDAY=${tok}`);
+  }
+  // 🆕 v26.5.8k WEEKLY 다중 요일
+  if (r.bydays && r.freq === 'WEEKLY' && Array.isArray(r.bydays) && r.bydays.length > 0) {
+    const codes = [...new Set(r.bydays)]
+      .filter(d => Number.isInteger(d) && d >= 0 && d <= 6)
+      .sort((a, b) => a - b)
+      .map(d => DOW_TO_BYDAY_CODE[d]);
+    if (codes.length > 0) parts.push(`BYDAY=${codes.join(',')}`);
   }
   if (r.count && r.count > 0) parts.push(`COUNT=${r.count}`);
   if (r.until) {
@@ -1127,6 +1153,47 @@ function expandRruleDates(masterDate, rrule, rangeStart, rangeEnd, exdates) {
   if (rrule.until) {
     const [uy, um, ud] = rrule.until.split('-').map(Number);
     untilTs = new Date(uy, um - 1, ud, 23, 59, 59, 999).getTime();
+  }
+
+  // ── 🆕 v26.5.8k WEEKLY + 다중 요일 (BYDAY) ──────────────────
+  // 한 anchor (마스터 시작일) 에서 INTERVAL 주마다 점프하면서, 각 7일 윈도우 안의
+  // 모든 BYDAY 매칭일을 발생으로 친다. 시작일 요일은 자동 포함.
+  // 결과는 마지막에 정렬해서 반환 (한 주 안 push 순서가 시간순이 아닐 수 있음).
+  if (rrule.freq === 'WEEKLY' && rrule.bydays && rrule.bydays.length > 0) {
+    const masterStart = new Date(my, mm - 1, md);
+    const masterStartTs = masterStart.getTime();
+    const daysSet = new Set(rrule.bydays);
+    daysSet.add(masterStart.getDay());   // 시작일 요일 자동 포함
+    const days = [...daysSet].sort((a, b) => a - b);
+
+    let occurrence = 0;
+    let cursor = new Date(masterStart);
+    let stop = false;
+
+    for (let iter = 0; iter < safetyLimit && !stop; iter++) {
+      // cursor 가 속한 7일 윈도우 안에서 days 의 각 요일 발생 시도
+      for (const dow of days) {
+        const offset = (dow - cursor.getDay() + 7) % 7;
+        const dt = new Date(cursor.getFullYear(), cursor.getMonth(), cursor.getDate() + offset);
+        const ts = dt.getTime();
+
+        if (rrule.count != null && occurrence >= rrule.count) { stop = true; break; }
+        if (untilTs != null && ts > untilTs) { stop = true; break; }
+        if (ts >= rangeEnd.getTime()) { stop = true; break; }
+        // 마스터 시작일 이전은 점프 (cursor 가 첫 iter 에선 masterStart 이므로 여기 걸릴 일 없음)
+        if (ts < masterStartTs) continue;
+
+        const dateStr = formatDate(dt);
+        if (ts >= rangeStart.getTime() && !exSet.has(dateStr)) result.push(dateStr);
+        occurrence++;
+      }
+      // 다음 anchor: INTERVAL 주마다
+      cursor = new Date(cursor.getFullYear(), cursor.getMonth(), cursor.getDate() + 7 * interval);
+    }
+    // 한 주 안 push 순서가 days 정렬 순서라 (월,수,금) 처럼 정렬돼있지만,
+    // 시작 요일이 days 중간이면 시간순이 깨진다 (예: 마스터=수, days=[월,수,금] → 수,월,금 순으로 푸시될 수도).
+    // → 항상 정렬해서 반환.
+    return result.sort();
   }
 
   // cursor (현재 시도 중인 위치) — DAILY/WEEKLY는 (Y,M,D) 그대로 진행
@@ -1261,14 +1328,19 @@ function describeRrule(r) {
     if (r.freq === 'YEARLY')  return interval === 1 ? '매년' : `${interval}년마다`;
     return '';
   })();
-  // 🆕 v26.5.8j BYDAY 부분 (예: " 셋째 주 목요일", " 마지막 금요일")
+  // 🆕 v26.5.8j MONTHLY BYDAY (예: " 셋째 주 목요일", " 마지막 금요일")
+  // 🆕 v26.5.8k WEEKLY BYDAY (예: " 월·수·금요일")
   let bydayStr = '';
+  const dowKor = ['일','월','화','수','목','금','토'];
   if (r.byday && r.freq === 'MONTHLY') {
     const ordWords = { 1:'첫째', 2:'둘째', 3:'셋째', 4:'넷째', 5:'다섯째' };
-    const dowKor = ['일','월','화','수','목','금','토'];
     const dn = dowKor[r.byday.dow] || '';
     if (r.byday.ordinal === -1) bydayStr = ` 마지막 ${dn}요일`;
     else if (ordWords[r.byday.ordinal]) bydayStr = ` ${ordWords[r.byday.ordinal]} 주 ${dn}요일`;
+  } else if (r.bydays && r.freq === 'WEEKLY' && r.bydays.length > 0) {
+    const sorted = [...new Set(r.bydays)].sort((a, b) => a - b);
+    const names = sorted.map(d => dowKor[d]).filter(Boolean);
+    if (names.length > 0) bydayStr = ` ${names.join('·')}요일`;
   }
   let endStr = '';
   if (r.count) endStr = ` · 총 ${r.count}회`;
@@ -1602,8 +1674,57 @@ function updateAlarmChips() {
 }
 
 /**
+ * 🆕 v26.5.8k WEEKLY 요일 토글 헬퍼들.
+ *
+ * - getStartDow(): evDate 입력값에서 요일(0..6) 또는 null
+ * - setWeekdayToggles(activeDows): active 클래스 일괄 적용 (시작일 요일은 항상 포함)
+ * - syncWeeklyStartDay(): 시작일 요일을 자동 active+disabled, 나머지는 disabled 풀기.
+ *     evDate change / freq=WEEKLY 진입 시 호출.
+ * - getActiveWeeklyDays(): 현재 active 토글들의 dow 배열 (정렬, 시작일 요일 보장)
+ */
+function getStartDow() {
+  const startStr = document.getElementById('evDate').value;
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(startStr)) return null;
+  const [y, m, d] = startStr.split('-').map(Number);
+  return new Date(y, m - 1, d).getDay();
+}
+function setWeekdayToggles(activeDows) {
+  const startDow = getStartDow();
+  const set = new Set(activeDows || []);
+  if (startDow != null) set.add(startDow);   // 시작일 요일 자동 포함
+  document.querySelectorAll('.weekday-toggle').forEach(btn => {
+    const dow = parseInt(btn.dataset.dow, 10);
+    btn.classList.toggle('active', set.has(dow));
+  });
+}
+function syncWeeklyStartDay() {
+  const startDow = getStartDow();
+  document.querySelectorAll('.weekday-toggle').forEach(btn => {
+    const dow = parseInt(btn.dataset.dow, 10);
+    if (startDow != null && dow === startDow) {
+      btn.classList.add('active');   // 시작일 요일은 항상 active
+      btn.disabled = true;            //  + 못 끄게
+      btn.title = '시작일 요일 (자동)';
+    } else {
+      btn.disabled = false;
+      btn.title = '';
+    }
+  });
+}
+function getActiveWeeklyDays() {
+  const out = [];
+  document.querySelectorAll('.weekday-toggle.active').forEach(btn => {
+    out.push(parseInt(btn.dataset.dow, 10));
+  });
+  const startDow = getStartDow();
+  if (startDow != null && !out.includes(startDow)) out.push(startDow);
+  return [...new Set(out)].sort((a, b) => a - b);
+}
+
+/**
  * 🆕 v26.5.8a 반복 폼을 RRULE 문자열로부터 채움.
  * 🆕 v26.5.8j MONTHLY 일 때 BYDAY 가 있으면 monthly mode 도 함께 세팅.
+ * 🆕 v26.5.8k WEEKLY 일 때 BYDAY (다중 요일) 가 있으면 토글 active 복원.
  * @param {string} rruleStr  비어있으면 "반복 없음"으로
  */
 function fillRecurrenceForm(rruleStr) {
@@ -1619,6 +1740,7 @@ function fillRecurrenceForm(rruleStr) {
     freq.value = '';
     interval.value = 1;
     if (monthMode) monthMode.value = 'bymonthday';
+    setWeekdayToggles([]);   // 시작일 요일만 active 로 리셋
     endType.value = 'never';
     countInp.value = 10;
     untilInp.value = '';
@@ -1633,6 +1755,12 @@ function fillRecurrenceForm(rruleStr) {
     } else {
       monthMode.value = 'bymonthday';
     }
+  }
+  // 🆕 v26.5.8k WEEKLY 요일 토글 복원
+  if (r.freq === 'WEEKLY' && r.bydays && r.bydays.length > 0) {
+    setWeekdayToggles(r.bydays);
+  } else {
+    setWeekdayToggles([]);
   }
   if (r.count) {
     endType.value = 'count';
@@ -1656,20 +1784,23 @@ function fillRecurrenceForm(rruleStr) {
  * - endType=count면 countInp 보임, until이면 untilInp 보임
  * - hint 문구도 갱신
  * 🆕 v26.5.8j freq=MONTHLY 일 때만 monthly mode select 보임
+ * 🆕 v26.5.8k freq=WEEKLY 일 때만 요일 토글 row 보임 + 시작일 요일 동기화
  */
 function updateRecurrenceUiVisibility() {
-  const freq      = document.getElementById('evRecurrenceFreq').value;
-  const interval  = document.getElementById('evRecurrenceInterval');
-  const monthMode = document.getElementById('evRecurrenceMonthlyMode');
-  const endRow    = document.getElementById('evRecurrenceEndRow');
-  const endType   = document.getElementById('evRecurrenceEndType').value;
-  const countInp  = document.getElementById('evRecurrenceCount');
-  const untilInp  = document.getElementById('evRecurrenceUntil');
-  const hint      = document.getElementById('evRecurrenceHint');
+  const freq       = document.getElementById('evRecurrenceFreq').value;
+  const interval   = document.getElementById('evRecurrenceInterval');
+  const monthMode  = document.getElementById('evRecurrenceMonthlyMode');
+  const weeklyRow  = document.getElementById('evRecurrenceWeeklyDays');
+  const endRow     = document.getElementById('evRecurrenceEndRow');
+  const endType    = document.getElementById('evRecurrenceEndType').value;
+  const countInp   = document.getElementById('evRecurrenceCount');
+  const untilInp   = document.getElementById('evRecurrenceUntil');
+  const hint       = document.getElementById('evRecurrenceHint');
 
   if (!freq) {
     interval.style.display = 'none';
     if (monthMode) monthMode.style.display = 'none';
+    if (weeklyRow) weeklyRow.style.display = 'none';
     endRow.style.display = 'none';
     hint.textContent = '';
     return;
@@ -1677,6 +1808,11 @@ function updateRecurrenceUiVisibility() {
   interval.style.display = '';
   // 🆕 v26.5.8j MONTHLY 일 때만 모드 선택 보임
   if (monthMode) monthMode.style.display = (freq === 'MONTHLY') ? '' : 'none';
+  // 🆕 v26.5.8k WEEKLY 일 때만 요일 토글 row 보임 + 시작일 요일 자동 잠금
+  if (weeklyRow) {
+    weeklyRow.style.display = (freq === 'WEEKLY') ? '' : 'none';
+    if (freq === 'WEEKLY') syncWeeklyStartDay();
+  }
   endRow.style.display = 'block';
 
   countInp.style.display = endType === 'count' ? '' : 'none';
@@ -1692,7 +1828,9 @@ function updateRecurrenceUiVisibility() {
  * 🆕 v26.5.8j MONTHLY 모드가 byday/bydaylast 면 evDate(시작일) 에서 ordinal+dow 자동 추론.
  *   - byday      : ordinal = 시작일이 그 달 (해당 요일) 의 몇 번째인지
  *   - bydaylast  : ordinal = -1, dow = 시작일의 요일
- * @returns {object|null}  { freq, interval, count, until, byday }, 반복 없으면 null
+ * 🆕 v26.5.8k WEEKLY 면 active 요일 토글들을 bydays 로 수집 (시작일 요일 강제 포함).
+ *   단일 요일(=시작일 요일만 active) 이면 bydays 생략 → "FREQ=WEEKLY" 만 출력.
+ * @returns {object|null}  { freq, interval, count, until, byday, bydays }, 반복 없으면 null
  */
 function collectRecurrenceFromForm() {
   const freq     = document.getElementById('evRecurrenceFreq').value;
@@ -1702,7 +1840,7 @@ function collectRecurrenceFromForm() {
   const interval = isNaN(intervalRaw) || intervalRaw < 1 ? 1 : Math.min(99, intervalRaw);
 
   const endType = document.getElementById('evRecurrenceEndType').value;
-  const r = { freq, interval, count: null, until: null, byday: null };
+  const r = { freq, interval, count: null, until: null, byday: null, bydays: null };
 
   if (endType === 'count') {
     const c = parseInt(document.getElementById('evRecurrenceCount').value, 10);
@@ -1731,6 +1869,15 @@ function collectRecurrenceFromForm() {
         r.byday = { ordinal: ord, dow };
       }
     }
+  }
+
+  // 🆕 v26.5.8k WEEKLY → active 토글들의 dow 모음
+  // 시작일 요일만 active (= 단일 요일) 이면 bydays 비워둔다 — 기본 WEEKLY 와 동일하게 동작.
+  if (freq === 'WEEKLY') {
+    const days = getActiveWeeklyDays();
+    const startDow = getStartDow();
+    const isSingleStart = days.length === 1 && startDow != null && days[0] === startDow;
+    if (!isSingleStart && days.length > 0) r.bydays = days;
   }
   return r;
 }
@@ -1900,12 +2047,20 @@ async function saveEvent() {
       let merged = { ...old, ...data };   // 기존 + 새 입력
 
       // 🆕 v26.5.8b 일반 일정 → 마스터로 승격, 또는 마스터 → 일반 변환 (로컬 + NextCloud)
-      if (formRrule && (data.source === 'local' || data.source === 'nextcloud')) {
+      // 🆕 v26.5.8n 마스터 → 일반 변환 시 자식 분리 인스턴스도 제거 (orphan 방지)
+      const wasMaster = !!old.recurrence;
+      const becomesMaster = !!(formRrule && (data.source === 'local' || data.source === 'nextcloud'));
+      if (becomesMaster) {
         merged.recurrence = formRrule;
         if (!merged.exdates) merged.exdates = [];
       } else {
         delete merged.recurrence;
         delete merged.exdates;
+        if (wasMaster) {
+          // 시리즈 해체 → 마스터에 묶여있던 분리 인스턴스 모두 정리.
+          // 8f 의 loadAll() 마이그레이션이 어차피 잡지만 같은 세션에서 정리하는 게 일관됨.
+          state.events = state.events.filter(e => e.recurrenceId !== merged.id);
+        }
       }
 
       // ── source 가 바뀐 경우: 이전 원격 일정 삭제 ──
@@ -1915,11 +2070,24 @@ async function saveEvent() {
           await window.electronAPI.deleteGoogleEvent(old);   // 🆕 객체 전체
         }
         if (old.source === 'nextcloud' && old.ncUrl && isElectron) {
+          // NextCloud 는 ICS 통째 삭제 — 자식 분리 인스턴스도 서버에서 같이 제거됨
           await window.electronAPI.deleteNextcloudEvent(old);
         }
         // 이전 원격 메타데이터(googleId, ncUrl 등) 다 제거 — 새 source에서 새로 받음
         delete merged.googleId; delete merged.etag; delete merged.googleCalendarId;
         delete merged.ncUid; delete merged.ncUrl; delete merged.ncEtag; delete merged.ncCalendarUrl;
+
+        // 🆕 v26.5.8n 자식 분리 인스턴스도 마스터 따라 source/메타 동기화.
+        //   v26.5.8b 컨벤션: "자식의 source 는 마스터 따라감".
+        //   - 옛 source 의 원격 메타 제거 (옛 ncUrl/googleId 등은 마스터 deletion 으로 무효)
+        //   - 새 source 메타는 아래 push 흐름에서 detachedInstances 응답으로 자동 채워짐
+        //   - 시리즈 해체된 케이스(위에서 자식 모두 제거)에선 이 루프가 0회 — 무해
+        for (const child of state.events) {
+          if (child.recurrenceId !== merged.id) continue;
+          child.source = data.source;
+          delete child.googleId; delete child.etag; delete child.googleCalendarId;
+          delete child.ncUid; delete child.ncUrl; delete child.ncEtag; delete child.ncCalendarUrl;
+        }
       }
 
       // ── 새 source로 push ──
@@ -1947,7 +2115,10 @@ async function saveEvent() {
         }
       }
 
-      state.events[idx] = merged;
+      // 🆕 v26.5.8n idx 재계산 — 위에서 자식 filter 로 state.events 가 재배열됐을 수 있음
+      const newIdx = state.events.findIndex(e => e.id === merged.id);
+      if (newIdx >= 0) state.events[newIdx] = merged;
+      else             state.events.push(merged);   // 이론상 발생 안 함 (마스터는 filter 에서 살아남음)
       toast('수정되었습니다');
 
     } else {
@@ -2134,6 +2305,19 @@ async function saveRecurrenceEdit(ctx, formData, formRrule) {
       }
     }
 
+    // 🆕 v26.5.8l 옛 마스터에 묶인 cutoff 이후 분리 인스턴스 정리.
+    //   deleteEvent 의 future 분기와 일관성 유지. 이게 빠져있을 때 발생하던 문제:
+    //     "이후 모두 편집" 후 옛 마스터 RRULE 은 cutoff 까지 끊겼는데,
+    //     cutoff 이후 발생일의 분리 인스턴스가 orphan 으로 남아 캘린더에 떠다님.
+    //   masterRemoved 케이스에서도 동일 filter 적용 — 아예 시리즈 통째로 사라지므로
+    //   그 마스터의 모든 분리 인스턴스를 정리하는 게 8f 마이그레이션 의존보다 깔끔.
+    //   NextCloud 는 pushNcMasterWithInstances 가 ICS 통째로 PUT 하므로 자식 제거가
+    //   자동으로 서버에 반영됨 (masterRemoved 면 위에서 이미 deleteNextcloudEvent 호출).
+    state.events = state.events.filter(e => {
+      if (e.recurrenceId !== master.id) return true;
+      return (e.originalStart || e.date) < ctx.instanceDate;
+    });
+
     // 새 마스터 생성 (폼의 RRULE 우선, 없으면 원본 RRULE)
     const newRrule = formRrule || master.recurrence || '';
     const newMaster = {
@@ -2180,11 +2364,17 @@ async function saveRecurrenceEdit(ctx, formData, formRrule) {
       exdates: master.exdates || []
     };
     // 폼에서 RRULE을 비우면 단일 일정으로 변환
+    // 🆕 v26.5.8n 시리즈 해체 시 자식 분리 인스턴스도 정리 (orphan 방지)
+    //   NextCloud 는 마스터 push 가 ICS 통째 PUT 하므로 자식 누락이 자동 반영됨.
     if (!updated.recurrence) {
       delete updated.recurrence;
       delete updated.exdates;
+      state.events = state.events.filter(e => e.recurrenceId !== master.id);
     }
-    state.events[masterIdx] = updated;
+    // 🆕 v26.5.8n masterIdx 재계산 — 자식 filter 로 state.events 가 재배열됐을 수 있음
+    const newMasterIdx = state.events.findIndex(e => e.id === master.id);
+    if (newMasterIdx >= 0) state.events[newMasterIdx] = updated;
+    else                   state.events.push(updated);   // 이론상 발생 안 함
     affectedMasterIds.add(master.id);
     toast('시리즈 전체가 수정되었습니다');
   } else {
@@ -3082,7 +3272,17 @@ document.getElementById('evRecurrenceUntil').addEventListener('change', updateRe
 const _monthMode = document.getElementById('evRecurrenceMonthlyMode');
 if (_monthMode) _monthMode.addEventListener('change', updateRecurrenceUiVisibility);
 // 🆕 v26.5.8j 시작일 변경 → MONTHLY+byday 일 때 hint 가 시작일에서 ordinal/dow 를 다시 계산해야 함
+// 🆕 v26.5.8k 시작일 변경 → WEEKLY 일 때 새 시작일 요일을 자동 active+disabled (updateRecurrenceUiVisibility 안에서 처리)
 document.getElementById('evDate').addEventListener('change', updateRecurrenceUiVisibility);
+
+// 🆕 v26.5.8k WEEKLY 요일 토글 — disabled (시작일 요일) 는 무시, 그 외엔 active 토글
+document.querySelectorAll('.weekday-toggle').forEach(btn => {
+  btn.addEventListener('click', () => {
+    if (btn.disabled) return;
+    btn.classList.toggle('active');
+    updateRecurrenceUiVisibility();   // hint 갱신
+  });
+});
 
 
 // ─── 메모 입력창 ───

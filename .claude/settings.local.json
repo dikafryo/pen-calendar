@@ -1,0 +1,7 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(grep -n -E \"^\\(function|const|async function|window\\\\.electronAPI|// |// ─|// ╔|/\\\\\\\\*\\\\\\\\*\\)\" C:/developer/neisme-calendar/renderer/app.js)"
+    ]
+  }
+}
