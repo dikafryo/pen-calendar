@@ -871,10 +871,23 @@ function darkenHex(hex, factor) {
   return `rgb(${r},${g},${b})`;
 }
 
-/** 🆕 day-event용 inline style 문자열 (배경 15% 투명 + 어두운 텍스트 + 좌측 보더색) */
+/** 🆕 v26.5.9 hex 색을 흰색과 섞기 (solid pastel 배경용). blend 0~1, 작을수록 흰색에 가까움 */
+function mixWithWhite(hex, blend) {
+  if (!hex || hex[0] !== '#') return '#ffffff';
+  const c = hex.replace('#', '');
+  const full = c.length === 3 ? c.split('').map(x => x + x).join('') : c;
+  const r = parseInt(full.substring(0, 2), 16) || 0;
+  const g = parseInt(full.substring(2, 4), 16) || 0;
+  const b = parseInt(full.substring(4, 6), 16) || 0;
+  const mix = v => Math.round(255 * (1 - blend) + v * blend);
+  return `rgb(${mix(r)},${mix(g)},${mix(b)})`;
+}
+
+/** 🆕 day-event용 inline style 문자열 (solid pastel 배경 + 어두운 텍스트 + 좌측 보더색)
+ *  v26.5.9: 0.15 alpha → 흰색과 15% 섞은 solid 색. --opacity 영향 안 받아 셀이 투명해도 가독성 유지. */
 function eventInlineStyle(e) {
   const color = eventColor(e);
-  return `background:${hexToRgba(color, 0.15)};color:${darkenHex(color, 0.45)};border-left-color:${color}`;
+  return `background:${mixWithWhite(color, 0.15)};color:${darkenHex(color, 0.45)};border-left-color:${color}`;
 }
 
 /** 알람 키 → 한국어 라벨 ('5min' → '5분전', '30min' → '30분전', '1day' → '1일전') */

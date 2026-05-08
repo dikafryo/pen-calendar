@@ -264,11 +264,12 @@ body {
     inset 0 -1px 0 rgba(0, 0, 0, 0.15);
 }
 .day.today .day-num { color: white; font-weight: 700; }
-/* 🆕 today 셀의 일정은 inline style(eventInlineStyle)보다 우선 — 흰색 강제 */
+/* 🆕 today 셀의 일정은 inline style(eventInlineStyle)보다 우선
+ * 🆕 v26.5.9 솔리드 배경 — --opacity 영향 안 받게 가시성 보장 */
 .day.today .day-event {
-  background: rgba(255, 255, 255, 0.28) !important;
-  color: white !important;
-  border-left-color: rgba(255, 255, 255, 0.6) !important;
+  background: #ffffff !important;
+  color: #c0392b !important;
+  border-left-color: #c0392b !important;
 }
 .day.compact { padding: 4px 4px 3px; }
 .day.compact .day-events { display: none; }
@@ -295,14 +296,24 @@ body {
   justify-content: space-between;
   margin-bottom: 3px;
 }
+/* 🆕 v26.5.9 날짜 숫자: 흰색 헤일로 그림자로 --opacity 낮을 때도 가독성 확보 */
 .day-num {
   font-size: calc(var(--base-fs) * 1.15);
   font-weight: 600;
   color: #2c3e50;
+  text-shadow:
+    0 0 3px rgba(255, 255, 255, 0.85),
+    0 1px 2px rgba(255, 255, 255, 0.6);
 }
 .day.compact .day-num { font-size: calc(var(--base-fs) * 1); }
 .day.sun .day-num { color: #d33; }
 .day.sat .day-num { color: #2563eb; }
+/* today 는 흰 글자 → 흰 헤일로 대신 어두운 그림자로 가독성 */
+.day.today .day-num {
+  text-shadow:
+    0 1px 2px rgba(0, 0, 0, 0.35),
+    0 0 3px rgba(0, 0, 0, 0.25);
+}
 .day.today.sun .day-num,
 .day.today.sat .day-num { color: white; }
 .day-alarm-icon { font-size: calc(var(--base-fs) * 0.75); opacity: 0.8; }
@@ -324,9 +335,10 @@ body {
   line-height: 1.3;
   border-left: 2px solid;
 }
-.day-event.google { background: rgba(66, 133, 244, 0.15); color: #1565c0; border-left-color: #4285f4; }
-.day-event.nextcloud { background: rgba(0, 130, 201, 0.15); color: #0277bd; border-left-color: #0082c9; }
-.day-event.local { background: rgba(52, 168, 83, 0.15); color: #2e7d32; border-left-color: #34a853; }
+/* 🆕 v26.5.9 이벤트 칩: solid 배경 (--opacity 영향 X) — 셀이 투명해도 가독성 유지 */
+.day-event.google { background: #e3edfd; color: #1565c0; border-left-color: #4285f4; }
+.day-event.nextcloud { background: #d9ecf7; color: #0277bd; border-left-color: #0082c9; }
+.day-event.local { background: #e1f2e5; color: #2e7d32; border-left-color: #34a853; }
 .day-event-more {
   font-size: calc(var(--base-fs) * 0.75);
   color: #888;
