@@ -322,6 +322,16 @@
       <button type="button" class="weekday-toggle" data-dow="5">금</button>
       <button type="button" class="weekday-toggle" data-dow="6">토</button>
     </div>
+    <!-- 🆕 v26.5.8o MONTHLY + byday 모드 일 때 보이는 ordinal 토글 (다중 주차 선택) -->
+    <!-- dow 는 시작일 요일에서 자동 추론. 시작일이 그 달의 N번째 (요일) 이면 N번 토글 active+disabled -->
+    <div id="evRecurrenceMonthlyOrdinals" class="weekly-days-row" style="display:none">
+      <button type="button" class="weekday-toggle ordinal-toggle" data-ord="1">1번째</button>
+      <button type="button" class="weekday-toggle ordinal-toggle" data-ord="2">2번째</button>
+      <button type="button" class="weekday-toggle ordinal-toggle" data-ord="3">3번째</button>
+      <button type="button" class="weekday-toggle ordinal-toggle" data-ord="4">4번째</button>
+      <button type="button" class="weekday-toggle ordinal-toggle" data-ord="5">5번째</button>
+      <button type="button" class="weekday-toggle ordinal-toggle" data-ord="-1">마지막</button>
+    </div>
 
     <div id="evRecurrenceEndRow" style="display:none">
       <label>종료 조건</label>
