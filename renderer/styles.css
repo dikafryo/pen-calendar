@@ -380,6 +380,7 @@ body {
   border-bottom: 1px dashed rgba(0,0,0,0.1);
   flex-shrink: 0;
 }
+/* 🆕 v26.5.9a 메모/할일 패널 텍스트도 --opacity 낮을 때 가독성 유지 (흰 헤일로) */
 .memo-title {
   font-size: calc(var(--base-fs) * 1.1);
   font-weight: 700;
@@ -387,6 +388,9 @@ body {
   display: flex;
   align-items: center;
   gap: 6px;
+  text-shadow:
+    0 0 3px rgba(255, 255, 255, 0.85),
+    0 1px 2px rgba(255, 255, 255, 0.6);
 }
 .memo-tabs { display: flex; gap: 4px; }
 .memo-tab {
@@ -398,6 +402,9 @@ body {
   cursor: pointer;
   color: #6b5d20;
   font-weight: 500;
+  text-shadow:
+    0 0 3px rgba(255, 255, 255, 0.85),
+    0 1px 2px rgba(255, 255, 255, 0.6);
 }
 .memo-tab.active {
   background: linear-gradient(145deg, #f4d35e, #e8b923);
@@ -405,6 +412,10 @@ body {
   box-shadow:
     1px 1px 2px rgba(0,0,0,0.15),
     inset 0 1px 0 rgba(255,255,255,0.4);
+  /* 흰 글자 → 어두운 그림자로 분기 */
+  text-shadow:
+    0 1px 2px rgba(0, 0, 0, 0.3),
+    0 0 3px rgba(0, 0, 0, 0.2);
 }
 .memo-list {
   flex: 1;
@@ -422,6 +433,10 @@ body {
   padding: 4px 2px;
   font-size: calc(var(--base-fs) * 0.95);
   color: #333;
+  /* 🆕 v26.5.9a 텍스트 헤일로 — 패널 bg 가 투명해져도 또렷 */
+  text-shadow:
+    0 0 3px rgba(255, 255, 255, 0.85),
+    0 1px 2px rgba(255, 255, 255, 0.6);
 }
 .memo-item.completed .memo-text {
   text-decoration: line-through;
@@ -486,6 +501,16 @@ body {
   font-size: calc(var(--base-fs) * 0.95);
   font-family: inherit;
   color: #333;
+  /* 🆕 v26.5.9a 입력 텍스트 헤일로 (placeholder 도 같이 적용) */
+  text-shadow:
+    0 0 3px rgba(255, 255, 255, 0.85),
+    0 1px 2px rgba(255, 255, 255, 0.6);
+}
+.memo-add-input::placeholder {
+  color: #8a7c50;
+  text-shadow:
+    0 0 3px rgba(255, 255, 255, 0.85),
+    0 1px 2px rgba(255, 255, 255, 0.6);
 }
 .memo-add-input:focus { outline: none; border-bottom-color: #e8b923; }
 .memo-empty {
@@ -494,6 +519,9 @@ body {
   font-size: calc(var(--base-fs) * 0.9);
   padding: 8px;
   font-style: italic;
+  text-shadow:
+    0 0 3px rgba(255, 255, 255, 0.85),
+    0 1px 2px rgba(255, 255, 255, 0.6);
 }
 
 /* ============ 컨텍스트 메뉴 / 모달 / 설정 / 팝오버 / 토스트 ============ */
