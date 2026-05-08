@@ -46,6 +46,7 @@ const state = {
   memoFilter: 'all',            // 메모 탭 필터: 'all' | 'active' | 'gtasks'
   opacity: 0.88,                // 위젯 투명도 (0~1)
   fontSize: 10,                 // 기본 폰트 크기 (pt)
+  theme: 'light',               // 🆕 v26.5.9b 'light' | 'dark'
 
   // Google 연결 상태 (refreshGoogleAuthStatus()에서 갱신)
   googleAuthenticated: false,
@@ -159,12 +160,13 @@ async function saveMemos() {
   await saveJSON('cal_memos_v4', state.memos);
 }
 
-/** 설정 저장 (레이아웃/투명도/폰트크기만) — 일정/메모는 따로 저장됨 */
+/** 설정 저장 (레이아웃/투명도/폰트크기/테마) — 일정/메모는 따로 저장됨 */
 async function saveSettings() {
   await saveJSON('cal_settings_v4', {
     layout: state.layout,
     opacity: state.opacity,
-    fontSize: state.fontSize
+    fontSize: state.fontSize,
+    theme: state.theme   // 🆕 v26.5.9b
   });
 }
 
@@ -883,10 +885,39 @@ function mixWithWhite(hex, blend) {
   return `rgb(${mix(r)},${mix(g)},${mix(b)})`;
 }
 
-/** 🆕 day-event용 inline style 문자열 (solid pastel 배경 + 어두운 텍스트 + 좌측 보더색)
- *  v26.5.9: 0.15 alpha → 흰색과 15% 섞은 solid 색. --opacity 영향 안 받아 셀이 투명해도 가독성 유지. */
+/** 🆕 v26.5.9b hex 색을 검정과 섞기 (다크 테마 칩 배경). blend 0~1, 작을수록 검정에 가까움 */
+function mixWithBlack(hex, blend) {
+  if (!hex || hex[0] !== '#') return '#000000';
+  const c = hex.replace('#', '');
+  const full = c.length === 3 ? c.split('').map(x => x + x).join('') : c;
+  const r = parseInt(full.substring(0, 2), 16) || 0;
+  const g = parseInt(full.substring(2, 4), 16) || 0;
+  const b = parseInt(full.substring(4, 6), 16) || 0;
+  const mix = v => Math.round(v * blend);
+  return `rgb(${mix(r)},${mix(g)},${mix(b)})`;
+}
+
+/** 🆕 v26.5.9b hex 색을 밝게 (다크 테마 칩 글자색). factor 0~1, 클수록 흰색에 가까움 */
+function lightenHex(hex, factor) {
+  if (!hex || hex[0] !== '#') return '#fff';
+  const c = hex.replace('#', '');
+  const full = c.length === 3 ? c.split('').map(x => x + x).join('') : c;
+  const r = parseInt(full.substring(0, 2), 16) || 0;
+  const g = parseInt(full.substring(2, 4), 16) || 0;
+  const b = parseInt(full.substring(4, 6), 16) || 0;
+  const mix = v => Math.round(v + (255 - v) * factor);
+  return `rgb(${mix(r)},${mix(g)},${mix(b)})`;
+}
+
+/** 🆕 day-event용 inline style 문자열 (테마별 분기)
+ *  v26.5.9: 0.15 alpha → solid 색. --opacity 영향 안 받음.
+ *  v26.5.9b: light = 흰색과 15% 섞기 + 어두운 글자, dark = 검정과 35% 섞기 + 밝은 글자.
+ *           둘 다 같은 hue 유지, 밝기만 조절. */
 function eventInlineStyle(e) {
   const color = eventColor(e);
+  if (state.theme === 'dark') {
+    return `background:${mixWithBlack(color, 0.35)};color:${lightenHex(color, 0.55)};border-left-color:${color}`;
+  }
   return `background:${mixWithWhite(color, 0.15)};color:${darkenHex(color, 0.45)};border-left-color:${color}`;
 }
 
@@ -2796,6 +2827,16 @@ function applyFontSize() {
   document.getElementById('fontSlider').value = state.fontSize;
 }
 
+/** 🆕 v26.5.9b 테마 적용 — html 에 .theme-dark 토글 + 토글 버튼 active 갱신.
+ *  이벤트 칩 inline style 은 테마에 따라 달라지므로 호출 후 renderCalendar 필요. */
+function applyTheme() {
+  const theme = state.theme === 'dark' ? 'dark' : 'light';
+  document.documentElement.classList.toggle('theme-dark', theme === 'dark');
+  document.querySelectorAll('.theme-btn').forEach(btn => {
+    btn.classList.toggle('active', btn.dataset.theme === theme);
+  });
+}
+
 /**
  * 레이아웃 변경 (3개 카드 중 하나).
  * - weekStartsOn 자동 변경 (uniform=일요일, 그외=월요일)
@@ -3582,6 +3623,19 @@ document.getElementById('fontSlider').addEventListener('input', async e => {
   state.fontSize = parseFloat(e.target.value);
   applyFontSize();
   await saveSettings();
+});
+
+// 🆕 v26.5.9b 테마 토글 (Light / Dark) — 클릭 시 즉시 적용 + 캘린더 재렌더 (이벤트 칩 색 갱신)
+document.querySelectorAll('.theme-btn').forEach(btn => {
+  btn.addEventListener('click', async () => {
+    const t = btn.dataset.theme;
+    if (t !== 'light' && t !== 'dark') return;
+    if (state.theme === t) return;
+    state.theme = t;
+    applyTheme();
+    renderCalendar();
+    await saveSettings();
+  });
 });
 
 
@@ -4569,6 +4623,7 @@ if (isElectron) {
   await applyLock();    // 잠금 상태 → DOM + 메인 동기화
   applyOpacity();        // 투명도 → CSS 변수
   applyFontSize();       // 폰트 크기 → CSS 변수
+  applyTheme();          // 🆕 v26.5.9b 테마(light/dark) → html 클래스 + 토글 active
   applyLayout();         // 레이아웃 → 그리드 종류 결정 + renderCalendar 호출
 
   // 3) 메모 렌더링 + 알람 예약

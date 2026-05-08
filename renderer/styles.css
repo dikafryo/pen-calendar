@@ -2,8 +2,115 @@
   --font-scale: 1;
   --base-fs: calc(10px * var(--font-scale));
   --opacity: 0.88;
+
+  /* 🆕 v26.5.9b 라이트 테마 (기본) — 모든 색은 var 로 분리, .theme-dark 에서 덮어씀 */
   --bg-base: 245, 247, 250;
   --shadow-color: 174, 178, 195;
+
+  /* 셀 그라디언트 (rgb 만 — alpha 는 사용처에서 var(--opacity)) */
+  --day-grad-1: 255, 255, 255;
+  --day-grad-2: 236, 240, 245;
+  --day-thisweek-1: 255, 248, 237;
+  --day-thisweek-2: 255, 233, 214;
+
+  /* 텍스트 */
+  --text-primary: #2c3e50;
+  --text-muted: #888;
+  --text-memo-title: #6b5d20;
+  --text-memo-item: #333;
+  --text-memo-empty: #a89360;
+  --text-memo-placeholder: #8a7c50;
+  --text-titlebar: #2c3e50;
+  --text-settings: #444;
+  --text-settings-h: #1a1a1a;
+
+  /* 텍스트 헤일로 */
+  --halo-1: rgba(255, 255, 255, 0.85);
+  --halo-2: rgba(255, 255, 255, 0.6);
+
+  /* 패널/타이틀바 그라디언트 */
+  --memo-grad-1: 255, 254, 245;
+  --memo-grad-2: 255, 248, 214;
+  --titlebar-grad-1: rgba(255, 255, 255, 0.4);
+  --titlebar-grad-2: rgba(255, 255, 255, 0.1);
+
+  /* 보더/구분선/스크롤바 */
+  --memo-input-border: rgba(0, 0, 0, 0.15);
+  --scrollbar-thumb: rgba(0, 0, 0, 0.15);
+  --settings-divider: #eee;
+  --tb-btn-bg: rgba(255, 255, 255, 0.5);
+  --tb-btn-bg-hover: rgba(255, 255, 255, 0.8);
+  --memo-tab-bg: rgba(0, 0, 0, 0.05);
+  --memo-checkbox-bg: white;
+
+  /* 이벤트 칩 (라이트: solid pastel 헥사) */
+  --evt-google-bg: #e3edfd;
+  --evt-google-fg: #1565c0;
+  --evt-nextcloud-bg: #d9ecf7;
+  --evt-nextcloud-fg: #0277bd;
+  --evt-local-bg: #e1f2e5;
+  --evt-local-fg: #2e7d32;
+
+  /* today 셀 이벤트 (테마 무관 — 오늘은 강한 빨간 셀) */
+  --today-evt-bg: #ffffff;
+  --today-evt-fg: #c0392b;
+
+  /* 월 헤더 / 요일 / 네비 버튼 */
+  --text-year: #6c7a89;
+  --text-weekday: #6c7a89;
+  --nav-btn-grad-1: #ffffff;
+  --nav-btn-grad-2: #e8ecf2;
+}
+
+/* 🆕 v26.5.9b 다크 테마 — :root 변수 덮어쓰기 */
+.theme-dark {
+  --bg-base: 28, 32, 40;
+  --shadow-color: 0, 0, 0;
+
+  --day-grad-1: 50, 55, 64;
+  --day-grad-2: 38, 42, 50;
+  --day-thisweek-1: 70, 56, 36;
+  --day-thisweek-2: 56, 44, 28;
+
+  --text-primary: #e8eaed;
+  --text-muted: #aaa;
+  --text-memo-title: #e0c870;
+  --text-memo-item: #e8eaed;
+  --text-memo-empty: #b8a060;
+  --text-memo-placeholder: #b8a060;
+  --text-titlebar: #e8eaed;
+  --text-settings: #d0d0d0;
+  --text-settings-h: #f0f0f0;
+
+  /* 다크에선 흰 헤일로 대신 어두운 헤일로 */
+  --halo-1: rgba(0, 0, 0, 0.75);
+  --halo-2: rgba(0, 0, 0, 0.5);
+
+  --memo-grad-1: 60, 50, 30;
+  --memo-grad-2: 70, 58, 36;
+  --titlebar-grad-1: rgba(255, 255, 255, 0.08);
+  --titlebar-grad-2: rgba(0, 0, 0, 0.2);
+
+  --memo-input-border: rgba(255, 255, 255, 0.18);
+  --scrollbar-thumb: rgba(255, 255, 255, 0.2);
+  --settings-divider: #3a3f48;
+  --tb-btn-bg: rgba(255, 255, 255, 0.1);
+  --tb-btn-bg-hover: rgba(255, 255, 255, 0.2);
+  --memo-tab-bg: rgba(255, 255, 255, 0.08);
+  --memo-checkbox-bg: #2a2e36;
+
+  /* 이벤트 칩 (다크: 같은 hue 더 어둡게 + 글자는 밝게) */
+  --evt-google-bg: #1a2840;
+  --evt-google-fg: #8ab4f8;
+  --evt-nextcloud-bg: #0d2030;
+  --evt-nextcloud-fg: #4fc3f7;
+  --evt-local-bg: #16291a;
+  --evt-local-fg: #81c995;
+
+  --text-year: #b0b8c4;
+  --text-weekday: #b0b8c4;
+  --nav-btn-grad-1: #4a4f58;
+  --nav-btn-grad-2: #2e323a;
 }
 
 * { box-sizing: border-box; margin: 0; padding: 0; }
@@ -45,7 +152,7 @@ body {
 .titlebar {
   height: 36px;
   flex-shrink: 0;
-  background: linear-gradient(180deg, rgba(255,255,255,0.4), rgba(255,255,255,0.1));
+  background: linear-gradient(180deg, var(--titlebar-grad-1), var(--titlebar-grad-2));
   border-bottom: 1px solid rgba(0,0,0,0.06);
   display: flex;
   align-items: center;
@@ -58,7 +165,7 @@ body {
 .titlebar-title {
   font-size: calc(var(--base-fs) * 1.1);
   font-weight: 600;
-  color: #2c3e50;
+  color: var(--text-titlebar);
   display: flex;
   align-items: center;
   gap: 6px;
@@ -86,11 +193,11 @@ body {
   width: 26px;
   height: 26px;
   border: none;
-  background: rgba(255,255,255,0.5);
+  background: var(--tb-btn-bg);
   border-radius: 6px;
   cursor: pointer;
   font-size: calc(var(--base-fs) * 1.2);
-  color: #2c3e50;
+  color: var(--text-titlebar);
   display: flex;
   align-items: center;
   justify-content: center;
@@ -98,7 +205,7 @@ body {
     1px 1px 2px rgba(var(--shadow-color), 0.4),
     -1px -1px 2px rgba(255,255,255,0.9);
 }
-.tb-btn:hover { background: rgba(255,255,255,0.8); }
+.tb-btn:hover { background: var(--tb-btn-bg-hover); }
 
 /* ============ 월 헤더 ============ */
 .month-nav {
@@ -124,12 +231,12 @@ body {
 .month-title .year {
   font-size: calc(var(--base-fs) * 1.2);
   font-weight: 500;
-  color: #6c7a89;
+  color: var(--text-year);
 }
 .month-title .month {
   font-size: calc(var(--base-fs) * 2);
   font-weight: 700;
-  color: #2c3e50;
+  color: var(--text-primary);
   letter-spacing: -0.5px;
 }
 .month-title .today-info {
@@ -143,11 +250,11 @@ body {
   width: 30px;
   height: 30px;
   border: none;
-  background: linear-gradient(145deg, #ffffff, #e8ecf2);
+  background: linear-gradient(145deg, var(--nav-btn-grad-1), var(--nav-btn-grad-2));
   border-radius: 8px;
   cursor: pointer;
   font-size: calc(var(--base-fs) * 0.95);
-  color: #2c3e50;
+  color: var(--text-primary);
   box-shadow:
     2px 2px 4px rgba(var(--shadow-color), 0.5),
     -2px -2px 4px rgba(255,255,255,0.95);
@@ -178,7 +285,7 @@ body {
   text-align: center;
   font-size: calc(var(--base-fs) * 1);
   font-weight: 600;
-  color: #6c7a89;
+  color: var(--text-weekday);
   padding: 4px 0;
 }
 .weekday.sun { color: #d33; }
@@ -220,8 +327,8 @@ body {
 
 .day {
   background: linear-gradient(145deg,
-    rgba(255, 255, 255, var(--opacity)),
-    rgba(236, 240, 245, var(--opacity)));
+    rgba(var(--day-grad-1), var(--opacity)),
+    rgba(var(--day-grad-2), var(--opacity)));
   border-radius: 10px;
   padding: 6px 7px 5px;
   cursor: pointer;
@@ -246,8 +353,8 @@ body {
 .day.other-month { opacity: 0.45; }
 .day.this-week:not(.today) {
   background: linear-gradient(145deg,
-    rgba(255, 248, 237, var(--opacity)),
-    rgba(255, 233, 214, var(--opacity)));
+    rgba(var(--day-thisweek-1), var(--opacity)),
+    rgba(var(--day-thisweek-2), var(--opacity)));
   box-shadow:
     3px 3px 7px rgba(255, 165, 100, 0.3),
     -2px -2px 4px rgba(255, 255, 255, 0.95);
@@ -265,11 +372,12 @@ body {
 }
 .day.today .day-num { color: white; font-weight: 700; }
 /* 🆕 today 셀의 일정은 inline style(eventInlineStyle)보다 우선
- * 🆕 v26.5.9 솔리드 배경 — --opacity 영향 안 받게 가시성 보장 */
+ * 🆕 v26.5.9 솔리드 배경 — --opacity 영향 안 받게 가시성 보장
+ * 🆕 v26.5.9b 테마별 분기 (다크에선 어두운 셀 위에서도 잘 보이게) */
 .day.today .day-event {
-  background: #ffffff !important;
-  color: #c0392b !important;
-  border-left-color: #c0392b !important;
+  background: var(--today-evt-bg) !important;
+  color: var(--today-evt-fg) !important;
+  border-left-color: var(--today-evt-fg) !important;
 }
 .day.compact { padding: 4px 4px 3px; }
 .day.compact .day-events { display: none; }
@@ -296,14 +404,15 @@ body {
   justify-content: space-between;
   margin-bottom: 3px;
 }
-/* 🆕 v26.5.9 날짜 숫자: 흰색 헤일로 그림자로 --opacity 낮을 때도 가독성 확보 */
+/* 🆕 v26.5.9 날짜 숫자: 흰색 헤일로 그림자로 --opacity 낮을 때도 가독성 확보
+ * 🆕 v26.5.9b 테마 변수 사용 — 다크에선 어두운 헤일로로 자동 분기 */
 .day-num {
   font-size: calc(var(--base-fs) * 1.15);
   font-weight: 600;
-  color: #2c3e50;
+  color: var(--text-primary);
   text-shadow:
-    0 0 3px rgba(255, 255, 255, 0.85),
-    0 1px 2px rgba(255, 255, 255, 0.6);
+    0 0 3px var(--halo-1),
+    0 1px 2px var(--halo-2);
 }
 .day.compact .day-num { font-size: calc(var(--base-fs) * 1); }
 .day.sun .day-num { color: #d33; }
@@ -335,13 +444,14 @@ body {
   line-height: 1.3;
   border-left: 2px solid;
 }
-/* 🆕 v26.5.9 이벤트 칩: solid 배경 (--opacity 영향 X) — 셀이 투명해도 가독성 유지 */
-.day-event.google { background: #e3edfd; color: #1565c0; border-left-color: #4285f4; }
-.day-event.nextcloud { background: #d9ecf7; color: #0277bd; border-left-color: #0082c9; }
-.day-event.local { background: #e1f2e5; color: #2e7d32; border-left-color: #34a853; }
+/* 🆕 v26.5.9 이벤트 칩: solid 배경 (--opacity 영향 X) — 셀이 투명해도 가독성 유지
+ * 🆕 v26.5.9b 테마 변수 사용 — 다크 테마에선 같은 hue 더 어둡게, 글자는 더 밝게 */
+.day-event.google { background: var(--evt-google-bg); color: var(--evt-google-fg); border-left-color: #4285f4; }
+.day-event.nextcloud { background: var(--evt-nextcloud-bg); color: var(--evt-nextcloud-fg); border-left-color: #0082c9; }
+.day-event.local { background: var(--evt-local-bg); color: var(--evt-local-fg); border-left-color: #34a853; }
 .day-event-more {
   font-size: calc(var(--base-fs) * 0.75);
-  color: #888;
+  color: var(--text-muted);
   padding: 0 4px;
   margin-top: 2px;
 }
@@ -359,8 +469,8 @@ body {
   flex-shrink: 0;
   margin: 6px 16px 14px;
   background: linear-gradient(145deg,
-    rgba(255, 254, 245, var(--opacity)),
-    rgba(255, 248, 214, var(--opacity)));
+    rgba(var(--memo-grad-1), var(--opacity)),
+    rgba(var(--memo-grad-2), var(--opacity)));
   border-radius: 14px;
   padding: 12px 16px;
   box-shadow:
@@ -380,31 +490,32 @@ body {
   border-bottom: 1px dashed rgba(0,0,0,0.1);
   flex-shrink: 0;
 }
-/* 🆕 v26.5.9a 메모/할일 패널 텍스트도 --opacity 낮을 때 가독성 유지 (흰 헤일로) */
+/* 🆕 v26.5.9a 메모/할일 패널 텍스트도 --opacity 낮을 때 가독성 유지 (흰 헤일로)
+ * 🆕 v26.5.9b 테마 변수 — 다크에선 어두운 헤일로 + 노란 톤 텍스트 */
 .memo-title {
   font-size: calc(var(--base-fs) * 1.1);
   font-weight: 700;
-  color: #6b5d20;
+  color: var(--text-memo-title);
   display: flex;
   align-items: center;
   gap: 6px;
   text-shadow:
-    0 0 3px rgba(255, 255, 255, 0.85),
-    0 1px 2px rgba(255, 255, 255, 0.6);
+    0 0 3px var(--halo-1),
+    0 1px 2px var(--halo-2);
 }
 .memo-tabs { display: flex; gap: 4px; }
 .memo-tab {
   border: none;
-  background: rgba(0,0,0,0.05);
+  background: var(--memo-tab-bg);
   padding: 3px 10px;
   border-radius: 10px;
   font-size: calc(var(--base-fs) * 0.9);
   cursor: pointer;
-  color: #6b5d20;
+  color: var(--text-memo-title);
   font-weight: 500;
   text-shadow:
-    0 0 3px rgba(255, 255, 255, 0.85),
-    0 1px 2px rgba(255, 255, 255, 0.6);
+    0 0 3px var(--halo-1),
+    0 1px 2px var(--halo-2);
 }
 .memo-tab.active {
   background: linear-gradient(145deg, #f4d35e, #e8b923);
@@ -424,7 +535,7 @@ body {
   min-height: 0;
 }
 .memo-list::-webkit-scrollbar { width: 4px; }
-.memo-list::-webkit-scrollbar-thumb { background: rgba(0,0,0,0.15); border-radius: 2px; }
+.memo-list::-webkit-scrollbar-thumb { background: var(--scrollbar-thumb); border-radius: 2px; }
 
 .memo-item {
   display: flex;
@@ -432,11 +543,11 @@ body {
   gap: 8px;
   padding: 4px 2px;
   font-size: calc(var(--base-fs) * 0.95);
-  color: #333;
-  /* 🆕 v26.5.9a 텍스트 헤일로 — 패널 bg 가 투명해져도 또렷 */
+  color: var(--text-memo-item);
+  /* 🆕 v26.5.9a 텍스트 헤일로 — 패널 bg 가 투명해져도 또렷 (테마별 분기) */
   text-shadow:
-    0 0 3px rgba(255, 255, 255, 0.85),
-    0 1px 2px rgba(255, 255, 255, 0.6);
+    0 0 3px var(--halo-1),
+    0 1px 2px var(--halo-2);
 }
 .memo-item.completed .memo-text {
   text-decoration: line-through;
@@ -452,7 +563,7 @@ body {
   display: flex;
   align-items: center;
   justify-content: center;
-  background: white;
+  background: var(--memo-checkbox-bg);
   box-shadow: inset 1px 1px 2px rgba(0,0,0,0.1);
 }
 .memo-item.completed .memo-checkbox {
@@ -495,33 +606,33 @@ body {
 .memo-add-input {
   flex: 1;
   border: none;
-  border-bottom: 1px solid rgba(0,0,0,0.15);
+  border-bottom: 1px solid var(--memo-input-border);
   background: transparent;
   padding: 4px 2px;
   font-size: calc(var(--base-fs) * 0.95);
   font-family: inherit;
-  color: #333;
-  /* 🆕 v26.5.9a 입력 텍스트 헤일로 (placeholder 도 같이 적용) */
+  color: var(--text-memo-item);
+  /* 🆕 v26.5.9a 입력 텍스트 헤일로 (placeholder 도 같이 적용, 테마별 분기) */
   text-shadow:
-    0 0 3px rgba(255, 255, 255, 0.85),
-    0 1px 2px rgba(255, 255, 255, 0.6);
+    0 0 3px var(--halo-1),
+    0 1px 2px var(--halo-2);
 }
 .memo-add-input::placeholder {
-  color: #8a7c50;
+  color: var(--text-memo-placeholder);
   text-shadow:
-    0 0 3px rgba(255, 255, 255, 0.85),
-    0 1px 2px rgba(255, 255, 255, 0.6);
+    0 0 3px var(--halo-1),
+    0 1px 2px var(--halo-2);
 }
 .memo-add-input:focus { outline: none; border-bottom-color: #e8b923; }
 .memo-empty {
   text-align: center;
-  color: #a89360;
+  color: var(--text-memo-empty);
   font-size: calc(var(--base-fs) * 0.9);
   padding: 8px;
   font-style: italic;
   text-shadow:
-    0 0 3px rgba(255, 255, 255, 0.85),
-    0 1px 2px rgba(255, 255, 255, 0.6);
+    0 0 3px var(--halo-1),
+    0 1px 2px var(--halo-2);
 }
 
 /* ============ 컨텍스트 메뉴 / 모달 / 설정 / 팝오버 / 토스트 ============ */
@@ -776,6 +887,32 @@ body {
 .settings-row input[type=checkbox] { transform: scale(1.1); cursor: pointer; }
 .settings-value { font-size: 11px; color: #666; min-width: 38px; text-align: right; }
 .settings-divider { height: 1px; background: #eee; margin: 10px 0; }
+
+/* 🆕 v26.5.9b 테마 토글 버튼 (Light / Dark) */
+.theme-toggle {
+  display: flex;
+  gap: 4px;
+  background: #ececec;
+  border-radius: 8px;
+  padding: 2px;
+}
+.theme-btn {
+  border: none;
+  background: transparent;
+  padding: 3px 10px;
+  border-radius: 6px;
+  font-size: 11px;
+  cursor: pointer;
+  color: #666;
+  font-weight: 500;
+  transition: all 0.15s;
+}
+.theme-btn.active {
+  background: white;
+  color: #2c3e50;
+  box-shadow: 0 1px 3px rgba(0,0,0,0.12);
+  font-weight: 600;
+}
 
 /* 계정 연결 행 */
 .settings-account {
