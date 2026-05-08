@@ -40,6 +40,9 @@ const state = {
   //   { masterId: string, instanceDate: "YYYY-MM-DD", isVirtual: boolean }
   // null이면 일반 단일 일정 편집
   editingInstanceContext: null,
+  // 🆕 v26.5.9e MONTHLY 다중 요일(mixed-dow) RRULE 처럼 UI 미지원 패턴을 편집 모달에서 마주쳤을 때
+  // 폼은 잠그고 원본 RRULE 문자열을 그대로 보존했다가 저장 시 emit. null 이면 일반 흐름.
+  editingPreservedRrule: null,
   locked: true,                 // 창 잠금 상태 (잠그면 드래그/리사이즈 불가)
   events: [],                   // 모든 일정 목록 (로컬+Google+NextCloud 합쳐서 보관)
   memos: [],                    // 모든 메모/할 일 목록 (로컬+Google Tasks)
@@ -1736,6 +1739,9 @@ function closeEventModal() {
   document.getElementById('eventModalBg').classList.remove('show');
   state.editingEventId = null;
   state.editingInstanceContext = null;   // 🆕 v26.5.8a
+  // 🆕 v26.5.9e mixed-dow 잠금 상태 리셋 — 다음 모달이 일반 흐름으로 열리게
+  state.editingPreservedRrule = null;
+  setRecurrenceFormLocked(false);
   // 🆕 v26.5.8e alwaysOnTop 복원 (사용자 store 설정값 그대로)
   if (isElectron && window.electronAPI.modalAotBypass) {
     window.electronAPI.modalAotBypass(false).catch(() => {});
@@ -1847,7 +1853,17 @@ function setWeekdayToggles(activeDows) {
   });
 }
 function syncWeeklyStartDay() {
+  // 🆕 v26.5.9e 시작일 요일이 바뀌면 옛 시작일 요일의 active 도 자동 해제.
+  // 옛 시작일 요일은 auto-include (disabled+active) 였으므로 사용자가 끄지 못한 상태였고,
+  // 시작일이 바뀌었으면 그 active 는 의도적 선택이 아님 → 자동 정리. (MONTHLY ordinal 과 동일 흐름)
+  const row = document.getElementById('evRecurrenceWeeklyDays');
   const startDow = getStartDow();
+  const prevRaw = row ? row.dataset.prevStartDow : null;
+  const prev = (prevRaw != null && prevRaw !== '') ? parseInt(prevRaw, 10) : null;
+  if (row && prev != null && prev !== startDow) {
+    const old = row.querySelector(`.weekday-toggle[data-dow="${prev}"]`);
+    if (old) old.classList.remove('active');
+  }
   document.querySelectorAll('#evRecurrenceWeeklyDays .weekday-toggle').forEach(btn => {
     const dow = parseInt(btn.dataset.dow, 10);
     if (startDow != null && dow === startDow) {
@@ -1859,6 +1875,7 @@ function syncWeeklyStartDay() {
       btn.title = '';
     }
   });
+  if (row) row.dataset.prevStartDow = (startDow == null ? '' : String(startDow));
 }
 function getActiveWeeklyDays() {
   const out = [];
@@ -1896,7 +1913,15 @@ function setMonthlyOrdinalToggles(activeOrds) {
   });
 }
 function syncMonthlyStartOrdinal() {
+  // 🆕 v26.5.9e 시작일 주차가 바뀌면 옛 시작일 ordinal 의 active 도 자동 해제. (WEEKLY 와 동일 흐름)
+  const row = document.getElementById('evRecurrenceMonthlyOrdinals');
   const startOrd = getStartMonthlyOrdinal();
+  const prevRaw = row ? row.dataset.prevStartOrd : null;
+  const prev = (prevRaw != null && prevRaw !== '') ? parseInt(prevRaw, 10) : null;
+  if (row && prev != null && prev !== startOrd) {
+    const old = row.querySelector(`.ordinal-toggle[data-ord="${prev}"]`);
+    if (old) old.classList.remove('active');
+  }
   document.querySelectorAll('#evRecurrenceMonthlyOrdinals .ordinal-toggle').forEach(btn => {
     const ord = parseInt(btn.dataset.ord, 10);
     if (startOrd != null && ord === startOrd) {
@@ -1908,6 +1933,7 @@ function syncMonthlyStartOrdinal() {
       btn.title = '';
     }
   });
+  if (row) row.dataset.prevStartOrd = (startOrd == null ? '' : String(startOrd));
 }
 function getActiveMonthlyOrdinals() {
   const out = [];
@@ -1922,10 +1948,44 @@ function getActiveMonthlyOrdinals() {
 }
 
 /**
+ * 🆕 v26.5.9e MONTHLY 다중 BYDAY 가 다중 dow 를 포함하는 패턴 (예: 1MO,3WE) 감지.
+ * 현재 UI 는 dow 단일 + ordinal 다중만 emit 가능 — 다중 dow 페어는 readonly 보존 대상.
+ */
+function isMixedDowMonthlyRrule(r) {
+  if (!r || r.freq !== 'MONTHLY') return false;
+  if (!r.bydaysMonthly || r.bydaysMonthly.length < 2) return false;
+  const dows = new Set(r.bydaysMonthly.map(p => p && p.dow).filter(d => d != null));
+  return dows.size > 1;
+}
+
+/**
+ * 🆕 v26.5.9e 반복 폼 전체를 잠금/해제 (mixed-dow MONTHLY 같은 UI 미지원 패턴 보존용).
+ * freq select 자체도 잠가서 사용자가 패턴을 우발적으로 덮어쓰지 못하게.
+ */
+function setRecurrenceFormLocked(locked) {
+  const ids = [
+    'evRecurrenceFreq',
+    'evRecurrenceInterval',
+    'evRecurrenceMonthlyMode',
+    'evRecurrenceEndType',
+    'evRecurrenceCount',
+    'evRecurrenceUntil'
+  ];
+  ids.forEach(id => {
+    const el = document.getElementById(id);
+    if (el) el.disabled = !!locked;
+  });
+  document.querySelectorAll(
+    '#evRecurrenceWeeklyDays .weekday-toggle, #evRecurrenceMonthlyOrdinals .ordinal-toggle'
+  ).forEach(btn => { btn.disabled = !!locked; });
+}
+
+/**
  * 🆕 v26.5.8a 반복 폼을 RRULE 문자열로부터 채움.
  * 🆕 v26.5.8j MONTHLY 일 때 BYDAY 가 있으면 monthly mode 도 함께 세팅.
  * 🆕 v26.5.8k WEEKLY 일 때 BYDAY (다중 요일) 가 있으면 토글 active 복원.
  * 🆕 v26.5.8o MONTHLY+byday 일 때 ordinal 토글 active 복원 (다중 ordinal 지원).
+ * 🆕 v26.5.9e MONTHLY mixed-dow (예: 1MO,3WE) 는 UI 미지원 → 원본 보존 + 폼 잠금.
  * @param {string} rruleStr  비어있으면 "반복 없음"으로
  */
 function fillRecurrenceForm(rruleStr) {
@@ -1935,9 +1995,16 @@ function fillRecurrenceForm(rruleStr) {
   const endType   = document.getElementById('evRecurrenceEndType');
   const countInp  = document.getElementById('evRecurrenceCount');
   const untilInp  = document.getElementById('evRecurrenceUntil');
+  // 🆕 v26.5.9e 모달 새로 열 때마다 시작일 prev 추적 리셋 (이전 모달의 prev 가 새 폼 active 를 잘못 지우지 않게)
+  const _wRow = document.getElementById('evRecurrenceWeeklyDays');
+  if (_wRow) delete _wRow.dataset.prevStartDow;
+  const _mRow = document.getElementById('evRecurrenceMonthlyOrdinals');
+  if (_mRow) delete _mRow.dataset.prevStartOrd;
 
   const r = parseRrule(rruleStr);
   if (!r) {
+    state.editingPreservedRrule = null;   // 🆕 v26.5.9e
+    setRecurrenceFormLocked(false);       // 🆕 v26.5.9e
     freq.value = '';
     interval.value = 1;
     if (monthMode) monthMode.value = 'bymonthday';
@@ -1948,6 +2015,33 @@ function fillRecurrenceForm(rruleStr) {
     untilInp.value = '';
     return;
   }
+  // 🆕 v26.5.9e MONTHLY mixed-dow (예: 1MO,3WE) 은 UI 편집 미지원 → 원본 보존 후 폼 잠금.
+  // 저장 시 collectRecurrenceString() 가 보존된 원본을 그대로 emit.
+  if (isMixedDowMonthlyRrule(r)) {
+    state.editingPreservedRrule = rruleStr;
+    freq.value = r.freq;
+    interval.value = r.interval || 1;
+    if (monthMode) monthMode.value = 'bymonthday';   // 잠긴 상태 — 의미 없음, 안전한 기본값
+    setWeekdayToggles([]);
+    setMonthlyOrdinalToggles([]);
+    if (r.count) {
+      endType.value = 'count';
+      countInp.value = r.count;
+      untilInp.value = '';
+    } else if (r.until) {
+      endType.value = 'until';
+      untilInp.value = r.until;
+      countInp.value = 10;
+    } else {
+      endType.value = 'never';
+      countInp.value = 10;
+      untilInp.value = '';
+    }
+    setRecurrenceFormLocked(true);
+    return;
+  }
+  state.editingPreservedRrule = null;
+  setRecurrenceFormLocked(false);
   freq.value = r.freq;
   interval.value = r.interval || 1;
   // 🆕 v26.5.8j MONTHLY 모드 복원
@@ -2022,6 +2116,21 @@ function updateRecurrenceUiVisibility() {
     if (monthOrdRow) monthOrdRow.style.display = 'none';
     endRow.style.display = 'none';
     hint.textContent = '';
+    return;
+  }
+  // 🆕 v26.5.9e mixed-dow MONTHLY 등 UI 미지원 패턴 — 폼이 이미 잠겨있다.
+  // 추가 row(weekly/monthly ordinal)는 숨겨서 사용자가 헷갈리지 않게,
+  // hint 는 보존된 RRULE 을 describeRrule 로 풀어서 안내 + 잠금 표시.
+  if (state.editingPreservedRrule) {
+    interval.style.display = '';
+    if (monthMode) monthMode.style.display = 'none';
+    if (weeklyRow) weeklyRow.style.display = 'none';
+    if (monthOrdRow) monthOrdRow.style.display = 'none';
+    endRow.style.display = 'block';
+    countInp.style.display = endType === 'count' ? '' : 'none';
+    untilInp.style.display = endType === 'until' ? '' : 'none';
+    const r = parseRrule(state.editingPreservedRrule);
+    hint.textContent = r ? `🔒 ${describeRrule(r)} (편집 미지원 패턴 — 원본 유지)` : '🔒 편집 미지원 패턴';
     return;
   }
   interval.style.display = '';
@@ -2120,8 +2229,10 @@ function collectRecurrenceFromForm() {
 
 /**
  * 🆕 v26.5.8a 폼에서 RRULE 문자열 직접 가져오기 (없으면 빈 문자열).
+ * 🆕 v26.5.9e mixed-dow MONTHLY 등 UI 미지원 패턴은 폼이 잠겨있고 원본 RRULE 이 보존돼있음 → 그대로 반환.
  */
 function collectRecurrenceString() {
+  if (state.editingPreservedRrule) return state.editingPreservedRrule;
   const r = collectRecurrenceFromForm();
   return r ? buildRrule(r) : '';
 }
