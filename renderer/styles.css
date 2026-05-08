@@ -61,6 +61,10 @@
   --nav-btn-grad-1: #ffffff;
   --nav-btn-grad-2: #e8ecf2;
 
+  /* 🆕 v26.5.9d 일/토 강조색 — 다크에선 더 밝은 톤으로 분기 */
+  --text-sun: #d33;
+  --text-sat: #2563eb;
+
   /* 🆕 v26.5.9c 팝업/모달/설정 패널 등 솔리드 서피스 */
   --surface-bg: #ffffff;
   --surface-fg: #333333;
@@ -137,6 +141,9 @@
   --text-weekday: #b0b8c4;
   --nav-btn-grad-1: #4a4f58;
   --nav-btn-grad-2: #2e323a;
+
+  --text-sun: #ff7373;
+  --text-sat: #7da7ff;
 
   --surface-bg: #2a2e36;
   --surface-fg: #e8eaed;
@@ -339,8 +346,8 @@ body {
   color: var(--text-weekday);
   padding: 4px 0;
 }
-.weekday.sun { color: #d33; }
-.weekday.sat { color: #2563eb; }
+.weekday.sun { color: var(--text-sun); }
+.weekday.sat { color: var(--text-sat); }
 .weekday.compact { font-size: calc(var(--base-fs) * 0.85); }
 .weekday.weekday-stack {
   display: flex;
@@ -352,8 +359,8 @@ body {
   font-size: calc(var(--base-fs) * 0.95);
   padding: 4px 0;
 }
-.weekday.weekday-stack .sat-label { color: #2563eb; font-weight: 600; }
-.weekday.weekday-stack .sun-label { color: #d33; font-weight: 600; }
+.weekday.weekday-stack .sat-label { color: var(--text-sat); font-weight: 600; }
+.weekday.weekday-stack .sun-label { color: var(--text-sun); font-weight: 600; }
 .weekday.weekday-stack .separator { color: #b0b0b0; font-weight: normal; }
 
 .days {
@@ -466,8 +473,8 @@ body {
     0 1px 2px var(--halo-2);
 }
 .day.compact .day-num { font-size: calc(var(--base-fs) * 1); }
-.day.sun .day-num { color: #d33; }
-.day.sat .day-num { color: #2563eb; }
+.day.sun .day-num { color: var(--text-sun); }
+.day.sat .day-num { color: var(--text-sat); }
 /* today 는 흰 글자 → 흰 헤일로 대신 어두운 그림자로 가독성 */
 .day.today .day-num {
   text-shadow:
@@ -653,7 +660,7 @@ body {
   opacity: 0;
 }
 .memo-item:hover .memo-delete { opacity: 1; }
-.memo-delete:hover { color: #d33; }
+.memo-delete:hover { color: var(--text-sun); }
 .memo-add-form { display: flex; gap: 6px; flex-shrink: 0; }
 .memo-add-input {
   flex: 1;
@@ -711,7 +718,7 @@ body {
   color: var(--surface-fg);
 }
 .ctx-item:hover { background: var(--surface-hover-bg); }
-.ctx-item.danger { color: #d33; }
+.ctx-item.danger { color: var(--text-sun); }
 .ctx-divider { height: 1px; background: var(--surface-divider); margin: 4px 0; }
 .ctx-icon { width: 16px; opacity: 0.7; text-align: center; }
 
