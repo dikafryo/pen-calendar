@@ -291,7 +291,7 @@
       <select id="evCalendar"></select>
     </div>
 
-    <!-- 🆕 v26.5.8a 반복 옵션 -->
+    <!-- 🆕 v26.5.8a 반복 옵션 / v26.5.8j MONTHLY BYDAY 모드 추가 -->
     <label>반복</label>
     <div class="recurrence-row">
       <select id="evRecurrenceFreq">
@@ -302,6 +302,12 @@
         <option value="YEARLY">매년</option>
       </select>
       <input type="number" id="evRecurrenceInterval" min="1" max="99" value="1" title="간격 (예: 매주 → 1주마다, 격주 → 2주마다)" style="display:none">
+      <!-- 🆕 v26.5.8j MONTHLY 일 때만 보이는 모드 (날짜 / 주차 / 마지막 주차) -->
+      <select id="evRecurrenceMonthlyMode" style="display:none" title="매월 반복 방식">
+        <option value="bymonthday">날짜로 반복</option>
+        <option value="byday">주차로 반복</option>
+        <option value="bydaylast">마지막 주차로 반복</option>
+      </select>
     </div>
 
     <div id="evRecurrenceEndRow" style="display:none">

@@ -938,29 +938,101 @@ function calDisplayName(c, source) {
 
 
 // ╔══════════════════════════════════════════════════════════════════╗
-// ║  🆕 v26.5.8a 반복 일정 (RRULE) 헬퍼들                                ║
+// ║  🆕 v26.5.8a 반복 일정 (RRULE) 헬퍼들 / v26.5.8j BYDAY 추가          ║
 // ║                                                                  ║
 // ║  - parseRrule:     "FREQ=WEEKLY;COUNT=10" → { freq, interval, ...} ║
 // ║  - buildRrule:     반대 방향                                       ║
 // ║  - expandRruleDates: 마스터 startDate + RRULE → 인스턴스 날짜 배열  ║
 // ║  - expandRecurrencesForRange: 5주 윈도우용 모든 마스터 펼치기       ║
 // ║                                                                  ║
-// ║  지원하는 RRULE 부분 (v26.5.8a 범위):                              ║
+// ║  지원하는 RRULE 부분:                                              ║
 // ║   - FREQ:     DAILY / WEEKLY / MONTHLY / YEARLY                  ║
 // ║   - INTERVAL: 1~99 (예: INTERVAL=2 + WEEKLY = 격주)               ║
 // ║   - COUNT:    N회 반복                                            ║
 // ║   - UNTIL:    YYYYMMDD 또는 YYYYMMDDTHHMMSSZ 형식                 ║
+// ║   - 🆕 BYDAY: MONTHLY 한정, 단일 ordinal+요일                      ║
+// ║              예: BYDAY=3TH (셋째 주 목요일), BYDAY=-1FR (마지막 금) ║
 // ║                                                                  ║
-// ║  v26.5.8a에선 BYDAY/BYMONTHDAY 등은 미지원. 향후 확장.              ║
-// ║  Google/NextCloud의 복잡한 RRULE은 v26.5.8c에서 main 위임.        ║
+// ║  v26.5.8j 에선 BYDAY 는 MONTHLY+단일 토큰만. 여러 BYDAY (예:       ║
+// ║  매주 화/목) 같은 WEEKLY+BYDAY 조합은 미지원. 향후 확장.            ║
+// ║  Google 은 recurrence push 안 함, NextCloud 는 ICAL.Recur 가      ║
+// ║  BYDAY 를 그대로 통과시키므로 sync 레이어 추가 변경 불필요.          ║
 // ╚══════════════════════════════════════════════════════════════════╝
 
 const RRULE_FREQS = ['DAILY', 'WEEKLY', 'MONTHLY', 'YEARLY'];
 
+// 🆕 v26.5.8j BYDAY 코드 ↔ 요일 인덱스 (0=일 ... 6=토)
+const BYDAY_CODE_TO_DOW = { SU:0, MO:1, TU:2, WE:3, TH:4, FR:5, SA:6 };
+const DOW_TO_BYDAY_CODE = ['SU','MO','TU','WE','TH','FR','SA'];
+
+/**
+ * 🆕 v26.5.8j 단일 BYDAY 토큰 파싱 (예: "3TH", "-1FR", "TH").
+ * @returns {{ordinal:number|null, dow:number}|null}  ordinal: 1..5, -1, 또는 null(생략)
+ */
+function parseBydayToken(tok) {
+  if (!tok) return null;
+  const m = /^(-?\d+)?([A-Z]{2})$/.exec(String(tok).trim().toUpperCase());
+  if (!m) return null;
+  const dow = BYDAY_CODE_TO_DOW[m[2]];
+  if (dow == null) return null;
+  const ordinal = m[1] ? parseInt(m[1], 10) : null;
+  return { ordinal, dow };
+}
+
+/**
+ * 🆕 v26.5.8j BYDAY 토큰 만들기 (예: ordinal=3, dow=4 → "3TH"; ordinal=-1, dow=5 → "-1FR").
+ */
+function buildBydayToken(ordinal, dow) {
+  if (dow == null || dow < 0 || dow > 6) return '';
+  const code = DOW_TO_BYDAY_CODE[dow];
+  if (ordinal == null) return code;
+  return `${ordinal}${code}`;
+}
+
+/**
+ * 🆕 v26.5.8j 어떤 달의 N번째 (요일) 날짜를 구함.
+ * ordinal=-1 이면 그 달의 마지막 (요일).
+ * 그 달에 N번째 (요일)이 없으면 null (예: 5번째 월요일이 없는 달).
+ */
+function findNthWeekdayInMonth(year, month0, ordinal, dow) {
+  if (ordinal === -1) {
+    // 그 달 마지막 날부터 거꾸로 (dow) 찾기
+    const lastDay = new Date(year, month0 + 1, 0);
+    const back = (lastDay.getDay() - dow + 7) % 7;
+    return new Date(year, month0, lastDay.getDate() - back);
+  }
+  if (!Number.isInteger(ordinal) || ordinal < 1 || ordinal > 5) return null;
+  // 1일의 요일에서 (dow) 까지 차이 → 첫 번째 (dow) 날짜
+  const first = new Date(year, month0, 1);
+  const diff = (dow - first.getDay() + 7) % 7;
+  const dayNum = 1 + diff + (ordinal - 1) * 7;
+  const lastOfMonth = new Date(year, month0 + 1, 0).getDate();
+  if (dayNum > lastOfMonth) return null;   // N번째가 그 달에 없음
+  return new Date(year, month0, dayNum);
+}
+
+/**
+ * 🆕 v26.5.8j 주어진 날짜가 그 달에서 (요일)의 몇 번째인지 (1..5).
+ */
+function nthWeekdayOfDate(date) {
+  const d = (date instanceof Date) ? date : new Date(date);
+  return Math.floor((d.getDate() - 1) / 7) + 1;
+}
+
+/**
+ * 🆕 v26.5.8j 주어진 날짜가 그 달에서 그 요일의 마지막 occurrence 인지.
+ */
+function isLastWeekdayOfMonth(date) {
+  const d = (date instanceof Date) ? date : new Date(date);
+  const next = new Date(d.getFullYear(), d.getMonth(), d.getDate() + 7);
+  return next.getMonth() !== d.getMonth();
+}
+
 /**
  * RRULE 문자열 파싱.
  * @param {string} str  "FREQ=WEEKLY;COUNT=10" 같은 형식
- * @returns {object|null}  { freq, interval, count, until }, 잘못된 형식이면 null
+ * @returns {object|null}  { freq, interval, count, until, byday }, 잘못된 형식이면 null
+ *   byday: null | { ordinal, dow } — MONTHLY 단일 토큰만 인식
  */
 function parseRrule(str) {
   if (!str || typeof str !== 'string') return null;
@@ -980,7 +1052,8 @@ function parseRrule(str) {
     freq: parts.FREQ,
     interval: Math.max(1, parseInt(parts.INTERVAL || '1', 10) || 1),
     count: null,
-    until: null
+    until: null,
+    byday: null   // 🆕 v26.5.8j
   };
 
   if (parts.COUNT) {
@@ -992,18 +1065,29 @@ function parseRrule(str) {
     const m = /^(\d{4})(\d{2})(\d{2})/.exec(parts.UNTIL);
     if (m) out.until = `${m[1]}-${m[2]}-${m[3]}`;
   }
+  // 🆕 v26.5.8j BYDAY 인식 — MONTHLY + 단일 토큰 + ordinal 있을 때만 의미 있는 것으로 간주.
+  //   (여러 토큰: "MO,TU,WE" 같은 WEEKLY 패턴은 v26.5.8j 범위 밖 — 무시 = passthrough)
+  if (parts.BYDAY && out.freq === 'MONTHLY' && !parts.BYDAY.includes(',')) {
+    const tok = parseBydayToken(parts.BYDAY);
+    if (tok && tok.ordinal != null) out.byday = tok;
+  }
   return out;
 }
 
 /**
  * 파싱된 RRULE 객체를 다시 문자열로.
- * @param {object} r  { freq, interval, count, until }
+ * @param {object} r  { freq, interval, count, until, byday }
  * @returns {string}
  */
 function buildRrule(r) {
   if (!r || !RRULE_FREQS.includes(r.freq)) return '';
   const parts = [`FREQ=${r.freq}`];
   if (r.interval && r.interval > 1) parts.push(`INTERVAL=${r.interval}`);
+  // 🆕 v26.5.8j BYDAY (MONTHLY 한정으로 의미 있음)
+  if (r.byday && r.freq === 'MONTHLY') {
+    const tok = buildBydayToken(r.byday.ordinal, r.byday.dow);
+    if (tok) parts.push(`BYDAY=${tok}`);
+  }
   if (r.count && r.count > 0) parts.push(`COUNT=${r.count}`);
   if (r.until) {
     // "YYYY-MM-DD" → "YYYYMMDD"
@@ -1056,10 +1140,17 @@ function expandRruleDates(masterDate, rrule, rangeStart, rangeEnd, exdates) {
     let dt;
 
     if (rrule.freq === 'MONTHLY') {
-      // 이 달에 origDay가 있는지 검사 (예: 2월에 31일 없음 → invalid)
-      const lastOfMonth = new Date(cursorY, cursorM + 1, 0).getDate();
-      if (origDay > lastOfMonth) valid = false;
-      else dt = new Date(cursorY, cursorM, origDay);
+      // 🆕 v26.5.8j BYDAY (예: 3TH, -1FR) 가 있으면 그 달의 N번째 요일을 찾음
+      if (rrule.byday) {
+        const inst = findNthWeekdayInMonth(cursorY, cursorM, rrule.byday.ordinal, rrule.byday.dow);
+        if (!inst) valid = false;       // 그 달에 N번째 요일이 없음 (예: 5번째 월요일이 없는 달)
+        else dt = inst;
+      } else {
+        // 기본: 매월 동일 일자
+        const lastOfMonth = new Date(cursorY, cursorM + 1, 0).getDate();
+        if (origDay > lastOfMonth) valid = false;
+        else dt = new Date(cursorY, cursorM, origDay);
+      }
     } else if (rrule.freq === 'YEARLY') {
       // origMonth0/origDay가 그 해에 있는지 (윤년 2/29 등)
       const lastOfMonth = new Date(cursorY, origMonth0 + 1, 0).getDate();
@@ -1170,11 +1261,20 @@ function describeRrule(r) {
     if (r.freq === 'YEARLY')  return interval === 1 ? '매년' : `${interval}년마다`;
     return '';
   })();
+  // 🆕 v26.5.8j BYDAY 부분 (예: " 셋째 주 목요일", " 마지막 금요일")
+  let bydayStr = '';
+  if (r.byday && r.freq === 'MONTHLY') {
+    const ordWords = { 1:'첫째', 2:'둘째', 3:'셋째', 4:'넷째', 5:'다섯째' };
+    const dowKor = ['일','월','화','수','목','금','토'];
+    const dn = dowKor[r.byday.dow] || '';
+    if (r.byday.ordinal === -1) bydayStr = ` 마지막 ${dn}요일`;
+    else if (ordWords[r.byday.ordinal]) bydayStr = ` ${ordWords[r.byday.ordinal]} 주 ${dn}요일`;
+  }
   let endStr = '';
   if (r.count) endStr = ` · 총 ${r.count}회`;
   else if (r.until) endStr = ` · ${r.until}까지`;
   else endStr = ' · 종료 없음';
-  return `${freqStr}${endStr}`;
+  return `${freqStr}${bydayStr}${endStr}`;
 }
 
 /**
@@ -1503,11 +1603,13 @@ function updateAlarmChips() {
 
 /**
  * 🆕 v26.5.8a 반복 폼을 RRULE 문자열로부터 채움.
+ * 🆕 v26.5.8j MONTHLY 일 때 BYDAY 가 있으면 monthly mode 도 함께 세팅.
  * @param {string} rruleStr  비어있으면 "반복 없음"으로
  */
 function fillRecurrenceForm(rruleStr) {
   const freq      = document.getElementById('evRecurrenceFreq');
   const interval  = document.getElementById('evRecurrenceInterval');
+  const monthMode = document.getElementById('evRecurrenceMonthlyMode');
   const endType   = document.getElementById('evRecurrenceEndType');
   const countInp  = document.getElementById('evRecurrenceCount');
   const untilInp  = document.getElementById('evRecurrenceUntil');
@@ -1516,6 +1618,7 @@ function fillRecurrenceForm(rruleStr) {
   if (!r) {
     freq.value = '';
     interval.value = 1;
+    if (monthMode) monthMode.value = 'bymonthday';
     endType.value = 'never';
     countInp.value = 10;
     untilInp.value = '';
@@ -1523,6 +1626,14 @@ function fillRecurrenceForm(rruleStr) {
   }
   freq.value = r.freq;
   interval.value = r.interval || 1;
+  // 🆕 v26.5.8j MONTHLY 모드 복원
+  if (monthMode) {
+    if (r.freq === 'MONTHLY' && r.byday) {
+      monthMode.value = (r.byday.ordinal === -1) ? 'bydaylast' : 'byday';
+    } else {
+      monthMode.value = 'bymonthday';
+    }
+  }
   if (r.count) {
     endType.value = 'count';
     countInp.value = r.count;
@@ -1544,10 +1655,12 @@ function fillRecurrenceForm(rruleStr) {
  * - freq 있으면 interval 보임, endRow 보임
  * - endType=count면 countInp 보임, until이면 untilInp 보임
  * - hint 문구도 갱신
+ * 🆕 v26.5.8j freq=MONTHLY 일 때만 monthly mode select 보임
  */
 function updateRecurrenceUiVisibility() {
   const freq      = document.getElementById('evRecurrenceFreq').value;
   const interval  = document.getElementById('evRecurrenceInterval');
+  const monthMode = document.getElementById('evRecurrenceMonthlyMode');
   const endRow    = document.getElementById('evRecurrenceEndRow');
   const endType   = document.getElementById('evRecurrenceEndType').value;
   const countInp  = document.getElementById('evRecurrenceCount');
@@ -1556,11 +1669,14 @@ function updateRecurrenceUiVisibility() {
 
   if (!freq) {
     interval.style.display = 'none';
+    if (monthMode) monthMode.style.display = 'none';
     endRow.style.display = 'none';
     hint.textContent = '';
     return;
   }
   interval.style.display = '';
+  // 🆕 v26.5.8j MONTHLY 일 때만 모드 선택 보임
+  if (monthMode) monthMode.style.display = (freq === 'MONTHLY') ? '' : 'none';
   endRow.style.display = 'block';
 
   countInp.style.display = endType === 'count' ? '' : 'none';
@@ -1573,7 +1689,10 @@ function updateRecurrenceUiVisibility() {
 
 /**
  * 🆕 v26.5.8a 모달 폼 값을 RRULE 객체로 수집.
- * @returns {object|null}  { freq, interval, count, until }, 반복 없으면 null
+ * 🆕 v26.5.8j MONTHLY 모드가 byday/bydaylast 면 evDate(시작일) 에서 ordinal+dow 자동 추론.
+ *   - byday      : ordinal = 시작일이 그 달 (해당 요일) 의 몇 번째인지
+ *   - bydaylast  : ordinal = -1, dow = 시작일의 요일
+ * @returns {object|null}  { freq, interval, count, until, byday }, 반복 없으면 null
  */
 function collectRecurrenceFromForm() {
   const freq     = document.getElementById('evRecurrenceFreq').value;
@@ -1583,7 +1702,7 @@ function collectRecurrenceFromForm() {
   const interval = isNaN(intervalRaw) || intervalRaw < 1 ? 1 : Math.min(99, intervalRaw);
 
   const endType = document.getElementById('evRecurrenceEndType').value;
-  const r = { freq, interval, count: null, until: null };
+  const r = { freq, interval, count: null, until: null, byday: null };
 
   if (endType === 'count') {
     const c = parseInt(document.getElementById('evRecurrenceCount').value, 10);
@@ -1591,6 +1710,27 @@ function collectRecurrenceFromForm() {
   } else if (endType === 'until') {
     const u = document.getElementById('evRecurrenceUntil').value;
     if (u) r.until = u;   // YYYY-MM-DD
+  }
+
+  // 🆕 v26.5.8j MONTHLY + byday/bydaylast → 시작일에서 자동 추론
+  if (freq === 'MONTHLY') {
+    const monthMode = document.getElementById('evRecurrenceMonthlyMode');
+    const mode = monthMode ? monthMode.value : 'bymonthday';
+    const startStr = document.getElementById('evDate').value;   // "YYYY-MM-DD"
+    if (mode !== 'bymonthday' && /^\d{4}-\d{2}-\d{2}$/.test(startStr)) {
+      const [y, m, d] = startStr.split('-').map(Number);
+      const startDate = new Date(y, m - 1, d);
+      const dow = startDate.getDay();
+      if (mode === 'bydaylast') {
+        r.byday = { ordinal: -1, dow };
+      } else {
+        // 'byday' — 해당 요일의 N번째 (1..5)
+        let ord = nthWeekdayOfDate(startDate);
+        if (ord < 1) ord = 1;
+        if (ord > 5) ord = 5;
+        r.byday = { ordinal: ord, dow };
+      }
+    }
   }
   return r;
 }
@@ -2938,6 +3078,11 @@ document.getElementById('evRecurrenceEndType').addEventListener('change', update
 // count/until 입력 → hint 갱신
 document.getElementById('evRecurrenceCount').addEventListener('input', updateRecurrenceUiVisibility);
 document.getElementById('evRecurrenceUntil').addEventListener('change', updateRecurrenceUiVisibility);
+// 🆕 v26.5.8j MONTHLY 모드 변경 → hint 갱신 (BYDAY 추론)
+const _monthMode = document.getElementById('evRecurrenceMonthlyMode');
+if (_monthMode) _monthMode.addEventListener('change', updateRecurrenceUiVisibility);
+// 🆕 v26.5.8j 시작일 변경 → MONTHLY+byday 일 때 hint 가 시작일에서 ordinal/dow 를 다시 계산해야 함
+document.getElementById('evDate').addEventListener('change', updateRecurrenceUiVisibility);
 
 
 // ─── 메모 입력창 ───
