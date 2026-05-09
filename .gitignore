@@ -29,3 +29,6 @@ npm-debug.log*
 *.dmg
 *.exe
 *.zip
+
+# 핸드오프 문서 (세션 시드 — 작업용, repo 에 안 박음)
+HANDOFF-v*.md
