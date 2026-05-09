@@ -50,6 +50,13 @@ const state = {
   opacity: 0.88,                // 위젯 투명도 (0~1)
   fontSize: 10,                 // 기본 폰트 크기 (pt)
   theme: 'light',               // 🆕 v26.5.9b 'light' | 'dark'
+  // 🆕 v26.5.9f 새 일정 추가 시 기본 저장 위치 (로컬/구글/NextCloud 통합).
+  // null 이면 기존 fallback (Google 연결돼있으면 google primary, 아니면 local).
+  // { source: 'local' | 'google' | 'nextcloud', id: string|null }
+  //   - local: id 무시
+  //   - google: id = googleCalendarId
+  //   - nextcloud: id = ncCalendarUrl
+  defaultTarget: null,
 
   // Google 연결 상태 (refreshGoogleAuthStatus()에서 갱신)
   googleAuthenticated: false,
@@ -169,7 +176,8 @@ async function saveSettings() {
     layout: state.layout,
     opacity: state.opacity,
     fontSize: state.fontSize,
-    theme: state.theme   // 🆕 v26.5.9b
+    theme: state.theme,                // 🆕 v26.5.9b
+    defaultTarget: state.defaultTarget // 🆕 v26.5.9f
   });
 }
 
@@ -983,6 +991,78 @@ function calDisplayName(c, source) {
   return '(이름 없음)';
 }
 
+/**
+ * 🆕 v26.5.9f 새 일정의 "전체 기본 저장 위치" 헬퍼.
+ *
+ * state.defaultTarget = { source: 'local'|'google'|'nextcloud', id: string|null } | null
+ *   - local 은 id 무시
+ *   - google: id = googleCalendarId
+ *   - nextcloud: id = ncCalendarUrl
+ *
+ * 주황 별표 UI 가 토글하는 단일 진실 — 한 군데(소스/캘린더)만 active.
+ */
+function isDefaultTarget(source, id) {
+  const t = state.defaultTarget;
+  if (!t || t.source !== source) return false;
+  if (source === 'local') return true;
+  return t.id === id;
+}
+async function setDefaultTarget(source, id) {
+  if (!source) {
+    state.defaultTarget = null;
+  } else if (source === 'local') {
+    state.defaultTarget = { source: 'local', id: null };
+  } else {
+    state.defaultTarget = { source, id: id || null };
+  }
+  await saveSettings();
+  renderDefaultTargetLabel();   // 설정 패널 라벨 갱신
+}
+/**
+ * 🆕 v26.5.9f 현재 default 가 살아있는 캘린더를 가리키는지 검증.
+ * (선택 해제된 캘린더가 default 로 박혀있으면 무의미 — null 취급)
+ */
+function resolveDefaultTarget() {
+  const t = state.defaultTarget;
+  if (!t) return null;
+  if (t.source === 'local') return { source: 'local', id: null };
+  if (t.source === 'google') {
+    const ok = (state.googleSelectedCalendars || []).some(c => c.id === t.id);
+    return ok ? { source: 'google', id: t.id } : null;
+  }
+  if (t.source === 'nextcloud') {
+    const ok = (state.nextcloudSelectedCalendars || []).some(c => c.url === t.id);
+    return ok ? { source: 'nextcloud', id: t.id } : null;
+  }
+  return null;
+}
+/**
+ * 🆕 v26.5.9f 설정 패널의 "현재 기본" 라벨 갱신.
+ * defaultTarget 이 어떤 source/캘린더를 가리키는지 한 줄로.
+ */
+function renderDefaultTargetLabel() {
+  const lbl = document.getElementById('defaultTargetLabel');
+  const localBtn = document.getElementById('defaultTargetLocalBtn');
+  if (!lbl) return;
+  const r = resolveDefaultTarget();
+  if (!r) {
+    lbl.textContent = '(미설정 — Google 우선)';
+  } else if (r.source === 'local') {
+    lbl.textContent = '로컬';
+  } else if (r.source === 'google') {
+    const c = (state.googleSelectedCalendars || []).find(x => x.id === r.id);
+    lbl.textContent = `Google · ${c ? calDisplayName(c, 'google') : r.id}`;
+  } else if (r.source === 'nextcloud') {
+    const c = (state.nextcloudSelectedCalendars || []).find(x => x.url === r.id);
+    lbl.textContent = `NextCloud · ${c ? calDisplayName(c, 'nextcloud') : r.id}`;
+  }
+  if (localBtn) {
+    const isLocal = r && r.source === 'local';
+    localBtn.classList.toggle('active', !!isLocal);
+    localBtn.textContent = isLocal ? '★' : '☆';
+  }
+}
+
 
 // ╔══════════════════════════════════════════════════════════════════╗
 // ║  🆕 v26.5.8a 반복 일정 (RRULE) 헬퍼들                              ║
@@ -1696,8 +1776,13 @@ function openEventModal(event, defaultDate) {
     // 🆕 v26.5.8c 종료 디폴트: 종료일 = 시작일, 종료시각 빈값 (저장 시 자동 채움)
     document.getElementById('evEndDate').value = document.getElementById('evDate').value;
     document.getElementById('evEndTime').value = '';
-    // 기본 저장 위치: Google 연결되면 google, 아니면 local
-    document.getElementById('evSource').value = state.googleAuthenticated ? 'google' : 'local';
+    // 🆕 v26.5.9f 기본 저장 위치: defaultTarget 우선 → 없으면 fallback (Google 연결되면 google, 아니면 local)
+    const _dt = resolveDefaultTarget();
+    if (_dt) {
+      document.getElementById('evSource').value = _dt.source;
+    } else {
+      document.getElementById('evSource').value = state.googleAuthenticated ? 'google' : 'local';
+    }
     document.getElementById('evMemo').value   = '';
 
     // 🆕 v26.5.8a 반복 폼 초기화
@@ -1801,9 +1886,15 @@ function updateEventCalendarDropdown(event) {
     const isInstanceEdit = !!(event._virtualOf || event.recurrenceId);
     sel.disabled = isInstanceEdit;
   } else {
-    // 신규: 기본 캘린더 자동 선택, 변경 가능
-    const primary = calendars.find(c => c.isPrimary);
-    if (primary) sel.value = source === 'google' ? primary.id : primary.url;
+    // 🆕 v26.5.9f 신규: defaultTarget 이 이 source 의 특정 캘린더를 가리키면 그걸 우선,
+    // 아니면 source 의 isPrimary 캘린더로 폴백.
+    const dt = resolveDefaultTarget();
+    let picked = null;
+    if (dt && dt.source === source) {
+      picked = calendars.find(c => (source === 'google' ? c.id : c.url) === dt.id) || null;
+    }
+    if (!picked) picked = calendars.find(c => c.isPrimary) || null;
+    if (picked) sel.value = source === 'google' ? picked.id : picked.url;
     sel.disabled = false;
   }
 }
@@ -3040,6 +3131,7 @@ async function refreshGoogleAuthStatus() {
       emailEl.textContent = '미연결';
       emailEl.classList.add('disconnected');
     }
+    renderDefaultTargetLabel();   // 🆕 v26.5.9f
   } catch (err) {
     console.error('Auth status check failed:', err);
   }
@@ -3095,6 +3187,7 @@ async function refreshNextcloudAuthStatus() {
       lbl.textContent = '미연결';
       lbl.classList.add('disconnected');
     }
+    renderDefaultTargetLabel();   // 🆕 v26.5.9f
   } catch (err) {
     console.error('NextCloud status check failed:', err);
   }
@@ -3749,6 +3842,14 @@ document.querySelectorAll('.theme-btn').forEach(btn => {
   });
 });
 
+// 🆕 v26.5.9f 새 일정 기본 위치 — 로컬 토글.
+// 클릭 시 defaultTarget 이 로컬이면 해제(null), 아니면 로컬로 설정.
+document.getElementById('defaultTargetLocalBtn')?.addEventListener('click', async () => {
+  const t = state.defaultTarget;
+  const isLocal = t && t.source === 'local';
+  await setDefaultTarget(isLocal ? null : 'local', null);
+});
+
 
 // ─── 잠금 토글 체크박스 ───
 document.getElementById('lockToggle').addEventListener('change', async e => {
@@ -3902,17 +4003,23 @@ function renderGcalList(listError) {
     return;
   }
 
-  list.innerHTML = errorBox + gcalDraft.map((c, i) => `
+  list.innerHTML = errorBox + gcalDraft.map((c, i) => {
+    const isDefault = isDefaultTarget('google', c.id);   // 🆕 v26.5.9f
+    return `
     <div class="cal-select-item" data-idx="${i}">
       <input type="checkbox" class="cal-check" ${c._checked ? 'checked' : ''}>
       <input type="color" class="cal-color-input" value="${escapeHtml(c.customColor)}" title="클릭하여 색상 변경">
       <span class="cal-name">${escapeHtml(calDisplayName(c, 'google'))}</span>
       <button class="cal-color-reset" title="원래 Google 색상으로 복원">↺</button>
-      <button class="cal-star ${c.isPrimary ? 'active' : ''}" title="기본 캘린더로 지정">
+      <button class="cal-star ${c.isPrimary ? 'active' : ''}" title="이 source 의 대표 캘린더로 지정">
         ${c.isPrimary ? '⭐' : '☆'}
       </button>
+      <button class="cal-default-star ${isDefault ? 'active' : ''}" title="새 일정의 전체 기본 위치로 지정 (3개 source 통합)">
+        ${isDefault ? '★' : '☆'}
+      </button>
     </div>
-  `).join('');
+  `;
+  }).join('');
 
   list.querySelectorAll('.cal-check').forEach(cb => {
     cb.addEventListener('change', () => {
@@ -3954,6 +4061,19 @@ function renderGcalList(listError) {
       if (!gcalDraft[i]._checked) { toast('먼저 체크해주세요'); return; }
       gcalDraft.forEach(x => x.isPrimary = false);
       gcalDraft[i].isPrimary = true;
+      renderGcalList(listError);
+    });
+  });
+
+  // 🆕 v26.5.9f 주황 별표 — 새 일정의 전체 기본 위치 (3 source 통합 단일).
+  list.querySelectorAll('.cal-default-star').forEach(star => {
+    star.addEventListener('click', async (e) => {
+      e.stopPropagation();
+      const item = star.closest('.cal-select-item');
+      const i = parseInt(item.dataset.idx, 10);
+      if (!gcalDraft[i]._checked) { toast('먼저 체크해주세요'); return; }
+      const wasDefault = isDefaultTarget('google', gcalDraft[i].id);
+      await setDefaultTarget(wasDefault ? null : 'google', gcalDraft[i].id);
       renderGcalList(listError);
     });
   });
@@ -4153,16 +4273,22 @@ function renderNcCalendarsMulti() {
     return;
   }
 
-  list.innerHTML = ncStep2Draft.map((c, i) => `
+  list.innerHTML = ncStep2Draft.map((c, i) => {
+    const isDefault = isDefaultTarget('nextcloud', c.url);   // 🆕 v26.5.9f
+    return `
     <div class="cal-select-item" data-idx="${i}">
       <input type="checkbox" class="cal-check" ${c._checked ? 'checked' : ''}>
       <span class="cal-color-dot" style="background:#0082c9"></span>
       <span class="cal-name">${escapeHtml(calDisplayName(c, 'nextcloud'))}</span>
-      <button class="cal-star ${c.isPrimary ? 'active' : ''}" title="기본 캘린더로 지정">
+      <button class="cal-star ${c.isPrimary ? 'active' : ''}" title="이 source 의 대표 캘린더로 지정">
         ${c.isPrimary ? '⭐' : '☆'}
       </button>
+      <button class="cal-default-star ${isDefault ? 'active' : ''}" title="새 일정의 전체 기본 위치로 지정 (3개 source 통합)">
+        ${isDefault ? '★' : '☆'}
+      </button>
     </div>
-  `).join('');
+  `;
+  }).join('');
 
   list.querySelectorAll('.cal-check').forEach(cb => {
     cb.addEventListener('change', () => {
@@ -4189,6 +4315,18 @@ function renderNcCalendarsMulti() {
       if (!ncStep2Draft[i]._checked) { toast('먼저 체크해주세요'); return; }
       ncStep2Draft.forEach(x => x.isPrimary = false);
       ncStep2Draft[i].isPrimary = true;
+      renderNcCalendarsMulti();
+    });
+  });
+
+  // 🆕 v26.5.9f 주황 별표 — 새 일정의 전체 기본 위치 (3 source 통합 단일).
+  list.querySelectorAll('.cal-default-star').forEach(star => {
+    star.addEventListener('click', async e => {
+      e.stopPropagation();
+      const i = parseInt(star.closest('.cal-select-item').dataset.idx, 10);
+      if (!ncStep2Draft[i]._checked) { toast('먼저 체크해주세요'); return; }
+      const wasDefault = isDefaultTarget('nextcloud', ncStep2Draft[i].url);
+      await setDefaultTarget(wasDefault ? null : 'nextcloud', ncStep2Draft[i].url);
       renderNcCalendarsMulti();
     });
   });
@@ -4289,17 +4427,23 @@ function renderNcManageList(listError) {
     return;
   }
 
-  list.innerHTML = errorBox + ncManageDraft.map((c, i) => `
+  list.innerHTML = errorBox + ncManageDraft.map((c, i) => {
+    const isDefault = isDefaultTarget('nextcloud', c.url);   // 🆕 v26.5.9f
+    return `
     <div class="cal-select-item" data-idx="${i}">
       <input type="checkbox" class="cal-check" ${c._checked ? 'checked' : ''}>
       <input type="color" class="cal-color-input" value="${escapeHtml(c.customColor)}" title="클릭하여 색상 변경">
       <span class="cal-name">${escapeHtml(calDisplayName(c, 'nextcloud'))}</span>
       <button class="cal-color-reset" title="기본 색상(#0082c9)으로 복원">↺</button>
-      <button class="cal-star ${c.isPrimary ? 'active' : ''}" title="기본 캘린더로 지정">
+      <button class="cal-star ${c.isPrimary ? 'active' : ''}" title="이 source 의 대표 캘린더로 지정">
         ${c.isPrimary ? '⭐' : '☆'}
       </button>
+      <button class="cal-default-star ${isDefault ? 'active' : ''}" title="새 일정의 전체 기본 위치로 지정 (3개 source 통합)">
+        ${isDefault ? '★' : '☆'}
+      </button>
     </div>
-  `).join('');
+  `;
+  }).join('');
 
   list.querySelectorAll('.cal-check').forEach(cb => {
     cb.addEventListener('change', () => {
@@ -4340,6 +4484,18 @@ function renderNcManageList(listError) {
       if (!ncManageDraft[i]._checked) { toast('먼저 체크해주세요'); return; }
       ncManageDraft.forEach(x => x.isPrimary = false);
       ncManageDraft[i].isPrimary = true;
+      renderNcManageList(listError);
+    });
+  });
+
+  // 🆕 v26.5.9f 주황 별표 — 새 일정의 전체 기본 위치 (3 source 통합 단일).
+  list.querySelectorAll('.cal-default-star').forEach(star => {
+    star.addEventListener('click', async e => {
+      e.stopPropagation();
+      const i = parseInt(star.closest('.cal-select-item').dataset.idx, 10);
+      if (!ncManageDraft[i]._checked) { toast('먼저 체크해주세요'); return; }
+      const wasDefault = isDefaultTarget('nextcloud', ncManageDraft[i].url);
+      await setDefaultTarget(wasDefault ? null : 'nextcloud', ncManageDraft[i].url);
       renderNcManageList(listError);
     });
   });
@@ -4407,17 +4563,23 @@ function renderNcManageList(listError) {
     return;
   }
 
-  list.innerHTML = errorBox + ncManageDraft.map((c, i) => `
+  list.innerHTML = errorBox + ncManageDraft.map((c, i) => {
+    const isDefault = isDefaultTarget('nextcloud', c.url);   // 🆕 v26.5.9f
+    return `
     <div class="cal-select-item" data-idx="${i}">
       <input type="checkbox" class="cal-check" ${c._checked ? 'checked' : ''}>
       <input type="color" class="cal-color-input" value="${escapeHtml(c.customColor)}" title="클릭하여 색상 변경">
       <span class="cal-name">${escapeHtml(calDisplayName(c, 'nextcloud'))}</span>
       <button class="cal-color-reset" title="기본 색상(#0082c9)으로 복원">↺</button>
-      <button class="cal-star ${c.isPrimary ? 'active' : ''}" title="기본 캘린더로 지정">
+      <button class="cal-star ${c.isPrimary ? 'active' : ''}" title="이 source 의 대표 캘린더로 지정">
         ${c.isPrimary ? '⭐' : '☆'}
       </button>
+      <button class="cal-default-star ${isDefault ? 'active' : ''}" title="새 일정의 전체 기본 위치로 지정 (3개 source 통합)">
+        ${isDefault ? '★' : '☆'}
+      </button>
     </div>
-  `).join('');
+  `;
+  }).join('');
 
   list.querySelectorAll('.cal-check').forEach(cb => {
     cb.addEventListener('change', () => {
@@ -4457,6 +4619,18 @@ function renderNcManageList(listError) {
       if (!ncManageDraft[i]._checked) { toast('먼저 체크해주세요'); return; }
       ncManageDraft.forEach(x => x.isPrimary = false);
       ncManageDraft[i].isPrimary = true;
+      renderNcManageList(listError);
+    });
+  });
+
+  // 🆕 v26.5.9f 주황 별표 — 새 일정의 전체 기본 위치 (3 source 통합 단일).
+  list.querySelectorAll('.cal-default-star').forEach(star => {
+    star.addEventListener('click', async e => {
+      e.stopPropagation();
+      const i = parseInt(star.closest('.cal-select-item').dataset.idx, 10);
+      if (!ncManageDraft[i]._checked) { toast('먼저 체크해주세요'); return; }
+      const wasDefault = isDefaultTarget('nextcloud', ncManageDraft[i].url);
+      await setDefaultTarget(wasDefault ? null : 'nextcloud', ncManageDraft[i].url);
       renderNcManageList(listError);
     });
   });
@@ -4758,6 +4932,7 @@ if (isElectron) {
   // 6) Google + NextCloud 인증 상태 확인 (UI 반영)
   await refreshGoogleAuthStatus();
   await refreshNextcloudAuthStatus();
+  renderDefaultTargetLabel();   // 🆕 v26.5.9f 안전망 (브라우저 모드에선 refresh 들이 early return)
 
   // 7) 연결돼있으면 자동 첫 동기화 (조용히 = 토스트 없이)
   // 1.5초/1.8초 차이 둔 이유: 동시 호출 시 IPC 폭주 약간 분산

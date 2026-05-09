@@ -1279,6 +1279,24 @@ body {
   color: #f4b400;   /* 노란색 별 */
 }
 
+/* 🆕 v26.5.9f 주황 별표 — 새 일정의 전체 기본 위치 (3 source 통합 단일).
+   .cal-star 와 같은 모양/크기, 색만 주황. 활성 시 진한 주황.
+   유니코드 ★/☆ 사용 (color 적용 가능 — 이모지 ⭐ 와 다름). */
+.cal-default-star {
+  border: none;
+  background: transparent;
+  cursor: pointer;
+  font-size: 16px;
+  padding: 2px 6px;
+  border-radius: 4px;
+  color: #ddd;
+  line-height: 1;
+}
+.cal-default-star:hover { background: rgba(255,140,0,0.10); color: #ffa64d; }
+.cal-default-star.active {
+  color: #ff8c00;   /* 주황 */
+}
+
 /* 모달 하단 분할 (좌측 "연결 해제" + 우측 "취소"/"저장") */
 .modal-actions-split {
   display: flex;
