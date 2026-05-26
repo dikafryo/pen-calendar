@@ -1211,9 +1211,16 @@ function parseRrule(str) {
     if (n > 0) out.count = n;
   }
   if (parts.UNTIL) {
-    // YYYYMMDD or YYYYMMDDTHHMMSSZ
-    const m = /^(\d{4})(\d{2})(\d{2})/.exec(parts.UNTIL);
-    if (m) out.until = `${m[1]}-${m[2]}-${m[3]}`;
+    // YYYY-MM-DD (app.js style — NC sync 가 normalizeRruleFromIcal 거쳐 넣어줌)
+    // YYYYMMDD            (RFC 5545 DATE)
+    // YYYYMMDDTHHMMSSZ    (RFC 5545 DATETIME UTC)
+    // 🆕 v26.5.10 하이픈 포함 형식 누락 버그 수정:
+    //   기존 정규식 `^(\d{4})(\d{2})(\d{2})` 은 "2026-05-31" 같은 형식을 매칭 못해
+    //   NC 동기화 후 마스터 UNTIL 이 통째로 무시되어 "이후 모두 삭제" 가 풀려버림.
+    const raw = parts.UNTIL;
+    const md = /^(\d{4})-(\d{2})-(\d{2})$/.exec(raw)
+            || /^(\d{4})(\d{2})(\d{2})/.exec(raw);
+    if (md) out.until = `${md[1]}-${md[2]}-${md[3]}`;
   }
   // 🆕 v26.5.8j MONTHLY 단일 ordinal+요일  (예: BYDAY=3TH, -1FR)
   // 🆕 v26.5.8k WEEKLY 다중 요일          (예: BYDAY=MO,WE,FR)
@@ -1498,6 +1505,13 @@ function expandRecurrencesForRange(rangeStart, rangeEnd) {
     const rrule = parseRrule(master.recurrence);
     if (!rrule) return;
     const dates = expandRruleDates(master.date, rrule, rangeStart, rangeEnd, master.exdates);
+    // 🆕 다중일 마스터의 (endDate - date) duration (일 단위). 가상 인스턴스 endDate 보정용.
+    let durationDays = 0;
+    if (master.endDate && master.endDate !== master.date) {
+      const ms = new Date(master.date + 'T00:00:00').getTime();
+      const me = new Date(master.endDate + 'T00:00:00').getTime();
+      durationDays = Math.max(0, Math.round((me - ms) / 86400000));
+    }
     dates.forEach(dateStr => {
       // 이미 분리된 인스턴스가 있으면 가상 인스턴스 생성 X
       if (detachedIndex.has(`${master.id}|${dateStr}`)) return;
@@ -1506,10 +1520,20 @@ function expandRecurrencesForRange(rangeStart, rangeEnd) {
       // → 그래서 마스터의 date와 일치하는 인스턴스만 한 번 더 안 만들면 됨.
       if (dateStr === master.date) return;
 
+      // 🆕 가상 인스턴스 endDate 는 인스턴스 시작일 + master duration 으로 보정.
+      //   (마스터 endDate 가 그대로 박혀있으면 다중일 인스턴스가 모든 날짜에 잘못 펼쳐짐)
+      let instEndDate = dateStr;
+      if (durationDays > 0) {
+        const [iy, im, id] = dateStr.split('-').map(Number);
+        const e = new Date(iy, im - 1, id + durationDays);
+        instEndDate = formatDate(e);
+      }
+
       out.push({
         ...master,
         id: `${master.id}:${dateStr}`,
         date: dateStr,
+        endDate: instEndDate,
         _virtualOf: master.id,
         _instanceDate: dateStr,
         // 가상 인스턴스 자체엔 RRULE 정보 표면화 X (마스터에서 다시 읽음)
@@ -1615,11 +1639,26 @@ function dateMinusOne(dateStr) {
  * showDayPopover에서 사용. renderCalendar는 5주 한꺼번에 캐시하므로 별도 처리.
  */
 function getEventsForDate(dateStr) {
-  const direct = state.events.filter(e => e.date === dateStr);
+  // 🆕 다중일 일정 (date ≤ dateStr ≤ endDate) 포함
+  const direct = state.events.filter(e => {
+    if (!e.date) return false;
+    if (e.date === dateStr) return true;
+    if (e.endDate && e.endDate > e.date) {
+      return e.date <= dateStr && dateStr <= e.endDate;
+    }
+    return false;
+  });
   const [y, m, d] = dateStr.split('-').map(Number);
-  const oneDay = new Date(y, m - 1, d, 0, 0, 0, 0);
-  const nextDay = new Date(y, m - 1, d + 1, 0, 0, 0, 0);
-  const virtual = expandRecurrencesForRange(oneDay, nextDay);
+  // 다중일 마스터에서 펼쳐지는 가상 인스턴스가 이 날짜를 덮을 수 있으니 윈도우를 살짝 넓게.
+  const winStart = new Date(y, m - 1, d - 366, 0, 0, 0, 0);
+  const winEnd   = new Date(y, m - 1, d + 1,   0, 0, 0, 0);
+  const virtual = expandRecurrencesForRange(winStart, winEnd).filter(e => {
+    if (e.date === dateStr) return true;
+    if (e.endDate && e.endDate > e.date) {
+      return e.date <= dateStr && dateStr <= e.endDate;
+    }
+    return false;
+  });
   return [...direct, ...virtual]
     .sort((a, b) => (a.time || '99:99').localeCompare(b.time || '99:99'));
 }
@@ -1630,18 +1669,36 @@ function getEventsForDate(dateStr) {
  */
 function buildEventsByDateMap(rangeStart, rangeEnd) {
   const map = {};
-  // 직접 저장된 이벤트 (마스터 + 분리된 인스턴스 + 일반)
-  state.events.forEach(e => {
+
+  // 🆕 다중일 일정을 date ~ endDate 모든 날짜에 펼쳐 넣는 헬퍼.
+  //   range 윈도우 밖은 잘라서 매핑.
+  const pushSpan = (e) => {
     if (!e.date) return;
-    if (!map[e.date]) map[e.date] = [];
-    map[e.date].push(e);
-  });
+    if (!e.endDate || e.endDate <= e.date) {
+      if (!map[e.date]) map[e.date] = [];
+      map[e.date].push(e);
+      return;
+    }
+    const [sy, sm, sd] = e.date.split('-').map(Number);
+    const [ey, em, ed] = e.endDate.split('-').map(Number);
+    let cur = new Date(sy, sm - 1, sd, 0, 0, 0, 0);
+    const last = new Date(ey, em - 1, ed, 0, 0, 0, 0);
+    // 윈도우 안으로 클립 (rangeEnd 는 exclusive)
+    while (cur.getTime() <= last.getTime() && cur.getTime() < rangeEnd.getTime()) {
+      if (cur.getTime() >= rangeStart.getTime()) {
+        const ds = formatDate(cur);
+        if (!map[ds]) map[ds] = [];
+        map[ds].push(e);
+      }
+      cur = new Date(cur.getFullYear(), cur.getMonth(), cur.getDate() + 1);
+    }
+  };
+
+  // 직접 저장된 이벤트 (마스터 + 분리된 인스턴스 + 일반)
+  state.events.forEach(pushSpan);
   // 가상 인스턴스
   const virtual = expandRecurrencesForRange(rangeStart, rangeEnd);
-  virtual.forEach(e => {
-    if (!map[e.date]) map[e.date] = [];
-    map[e.date].push(e);
-  });
+  virtual.forEach(pushSpan);
   // 각 날짜별로 시간순 정렬
   Object.keys(map).forEach(k => {
     map[k].sort((a, b) => (a.time || '99:99').localeCompare(b.time || '99:99'));
