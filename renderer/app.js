@@ -4786,11 +4786,47 @@ document.getElementById('ctxAlwaysTop').addEventListener('click', async () => {
 });
 
 
+document.getElementById('ctxAlwaysBottom').addEventListener('click', async () => {
+  hideContextMenu();
+  if (!isElectron) { toast('Electron 환경에서만 동작합니다'); return; }
+  try {
+    const current = await window.electronAPI.getAlwaysAtBottom();
+    const next = !current;
+    await window.electronAPI.setAlwaysAtBottom(next);
+    toast(next ? '항상 뒤에 표시 ON' : '항상 뒤에 표시 OFF');
+  } catch (err) {
+    toast('설정 실패: ' + err.message);
+  }
+});
+
+
 // ─── 설정 패널의 "항상 위에 표시" 체크박스 ───
 document.getElementById('alwaysOnTopToggle').addEventListener('change', async (e) => {
   if (!isElectron) return;
   try {
     await window.electronAPI.setAlwaysOnTop(e.target.checked);
+    // 상호 배타: 뒤에 표시 체크 해제
+    if (e.target.checked) {
+      const aabCb = document.getElementById('alwaysAtBottomToggle');
+      if (aabCb) aabCb.checked = false;
+    }
+  } catch (err) {
+    toast('설정 실패: ' + err.message);
+  }
+});
+
+
+// ─── 설정 패널의 "항상 뒤에 표시" 체크박스 ───
+document.getElementById('alwaysAtBottomToggle').addEventListener('change', async (e) => {
+  if (!isElectron) return;
+  try {
+    await window.electronAPI.setAlwaysAtBottom(e.target.checked);
+    toast(e.target.checked ? '항상 뒤에 표시 ON' : '항상 뒤에 표시 OFF');
+    // 상호 배타: 위에 표시 체크 해제
+    if (e.target.checked) {
+      const aotCb = document.getElementById('alwaysOnTopToggle');
+      if (aotCb) aotCb.checked = false;
+    }
   } catch (err) {
     toast('설정 실패: ' + err.message);
   }
@@ -4806,15 +4842,33 @@ if (isElectron && window.electronAPI.onAlwaysOnTopChanged) {
   });
 }
 
+// ─── "항상 뒤에 표시"가 변경되면 체크박스 즉시 반영 ───
+if (isElectron && window.electronAPI.onAlwaysAtBottomChanged) {
+  window.electronAPI.onAlwaysAtBottomChanged((enabled) => {
+    const cb = document.getElementById('alwaysAtBottomToggle');
+    if (cb) cb.checked = enabled;
+    // 상호 배타: bottom ON이면 top 해제
+    if (enabled) {
+      const aotCb = document.getElementById('alwaysOnTopToggle');
+      if (aotCb) aotCb.checked = false;
+    }
+  });
+}
+
 
 // ─── 시작 시 체크박스 초기 상태 동기화 (작은 IIFE) ───
-// 메인의 store에서 alwaysOnTop 값을 읽어 체크박스에 반영
+// 메인의 store에서 alwaysOnTop / alwaysAtBottom 값을 읽어 체크박스에 반영
 (async () => {
   if (!isElectron) return;
   try {
-    const aot = await window.electronAPI.getAlwaysOnTop();
-    const cb = document.getElementById('alwaysOnTopToggle');
-    if (cb) cb.checked = aot;
+    const [aot, aab] = await Promise.all([
+      window.electronAPI.getAlwaysOnTop(),
+      window.electronAPI.getAlwaysAtBottom(),
+    ]);
+    const aotCb = document.getElementById('alwaysOnTopToggle');
+    const aabCb = document.getElementById('alwaysAtBottomToggle');
+    if (aotCb) aotCb.checked = aot && !aab;
+    if (aabCb) aabCb.checked = !!aab;
   } catch {}
 })();
 

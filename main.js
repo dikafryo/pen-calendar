@@ -12,6 +12,7 @@ const store = new Store({
     bounds: null,
     locked: true,
     alwaysOnTop: true,    // 기본 ON (다른 창 위에 표시)
+    alwaysAtBottom: false, // 항상 뒤에 표시 (alwaysOnTop과 상호 배타)
     autoStart: true,
     layout: 'split',
     opacity: 0.88,
@@ -92,7 +93,11 @@ function createWindow() {
     if (!process.argv.includes('--hidden')) {
       mainWindow.show();
     }
-    applyAlwaysOnTop(store.get('alwaysOnTop'));
+    if (store.get('alwaysAtBottom')) {
+      applyAlwaysAtBottom(true);
+    } else {
+      applyAlwaysOnTop(store.get('alwaysOnTop'));
+    }
   });
 
   mainWindow.on('moved', saveBounds);
@@ -154,6 +159,52 @@ function applyAlwaysOnTop(enabled) {
 }
 
 // ─────────────────────────────────────────────
+// 항상 뒤에 표시 (데스크탑 고정)
+// ─────────────────────────────────────────────
+
+// Win32 SetWindowPos(HWND_BOTTOM) — PowerShell P/Invoke, 비동기 best-effort
+function sendWindowToBottom() {
+  if (process.platform !== 'win32' || !mainWindow || mainWindow.isDestroyed()) return;
+  try {
+    const hwndBuf = mainWindow.getNativeWindowHandle();
+    const hwndInt = hwndBuf.length >= 8
+      ? Number(hwndBuf.readBigUInt64LE(0))
+      : hwndBuf.readUInt32LE(0);
+    // SWP_NOSIZE(1)|SWP_NOMOVE(2)|SWP_NOACTIVATE(16) = 19, HWND_BOTTOM = 1
+    const script = `Add-Type -TypeDefinition @'
+using System;using System.Runtime.InteropServices;
+public class W{[DllImport("user32.dll")]public static extern bool SetWindowPos(IntPtr h,IntPtr i,int x,int y,int cx,int cy,uint f);}
+'@ -Language CSharp;[W]::SetWindowPos([IntPtr]${hwndInt},[IntPtr]1,0,0,0,0,19)`;
+    const encoded = Buffer.from(script, 'utf16le').toString('base64');
+    require('child_process').exec(
+      `powershell -NoProfile -NonInteractive -EncodedCommand ${encoded}`,
+      (err) => { if (err) console.error('[sendWindowToBottom]', err.message); }
+    );
+  } catch (err) {
+    console.error('[sendWindowToBottom]', err);
+  }
+}
+
+function applyAlwaysAtBottom(enabled) {
+  if (!mainWindow || mainWindow.isDestroyed()) return;
+  try {
+    if (enabled) {
+      mainWindow.setAlwaysOnTop(false);
+      mainWindow.setFocusable(false);
+      sendWindowToBottom();
+      mainWindow.webContents.send('always-on-top-changed', false);
+    } else {
+      mainWindow.setFocusable(true);
+      applyAlwaysOnTop(store.get('alwaysOnTop'));
+    }
+    mainWindow.webContents.send('always-at-bottom-changed', !!enabled);
+    console.log('[alwaysAtBottom]', enabled);
+  } catch (err) {
+    console.error('[applyAlwaysAtBottom]', err);
+  }
+}
+
+// ─────────────────────────────────────────────
 // 잠금 모드
 // ─────────────────────────────────────────────
 function applyLockState(locked, notifyRenderer = true) {
@@ -202,6 +253,7 @@ function createTray() {
     const visible = mainWindow && !mainWindow.isDestroyed() && mainWindow.isVisible();
     const locked = store.get('locked');
     const aot = store.get('alwaysOnTop');
+    const aab = store.get('alwaysAtBottom');
 
     const menu = Menu.buildFromTemplate([
       {
@@ -216,10 +268,23 @@ function createTray() {
       {
         label: '항상 위에 표시',
         type: 'checkbox',
-        checked: !!aot,
+        checked: !!aot && !aab,
+        enabled: !aab,
         click: (item) => {
           store.set('alwaysOnTop', item.checked);
           applyAlwaysOnTop(item.checked);
+        }
+      },
+      {
+        label: '항상 뒤에 표시 (바탕화면 고정)',
+        type: 'checkbox',
+        checked: !!aab,
+        click: (item) => {
+          store.set('alwaysAtBottom', item.checked);
+          if (item.checked) {
+            store.set('alwaysOnTop', false);
+          }
+          applyAlwaysAtBottom(item.checked);
         }
       },
       { type: 'separator' },
@@ -270,6 +335,7 @@ function createTray() {
   // store 변경 → 메뉴 즉시 갱신
   store.onDidChange('locked', refreshTrayMenu);
   store.onDidChange('alwaysOnTop', refreshTrayMenu);
+  store.onDidChange('alwaysAtBottom', refreshTrayMenu);
 }
 
 function toggleWindow() {
@@ -278,7 +344,11 @@ function toggleWindow() {
     mainWindow.hide();
   } else {
     mainWindow.show();
-    applyAlwaysOnTop(store.get('alwaysOnTop'));
+    if (store.get('alwaysAtBottom')) {
+      applyAlwaysAtBottom(true);
+    } else {
+      applyAlwaysOnTop(store.get('alwaysOnTop'));
+    }
   }
 }
 
@@ -312,24 +382,48 @@ function setupIPC() {
   //   사용 위치: app.js openEventModal/closeEventModal 진입·이탈
   ipcMain.handle('modal-aot-bypass', (e, suspend) => {
     if (!mainWindow || mainWindow.isDestroyed()) return;
+    const isBottomMode = store.get('alwaysAtBottom');
     if (suspend) {
       mainWindow.setAlwaysOnTop(false);
+      // 🆕 bottom 모드: 키보드 입력을 받으려면 focusable 임시 복원
+      if (isBottomMode) mainWindow.setFocusable(true);
       if (mainWindow.isMinimized()) mainWindow.restore();
       mainWindow.focus();
       mainWindow.webContents.focus();
     } else {
-      // store 값 그대로 복원 — applyAlwaysOnTop 이 always-on-top-changed 이벤트도
-      // renderer 로 보내주므로 설정 패널 체크박스 상태도 자연 동기화됨.
-      applyAlwaysOnTop(store.get('alwaysOnTop'));
+      if (isBottomMode) {
+        // 🆕 모달 닫힌 후 bottom 모드 재적용
+        mainWindow.setFocusable(false);
+        sendWindowToBottom();
+      } else {
+        applyAlwaysOnTop(store.get('alwaysOnTop'));
+      }
     }
   });
 
   ipcMain.handle('set-always-on-top', (e, enabled) => {
     store.set('alwaysOnTop', !!enabled);
+    if (enabled) {
+      // alwaysAtBottom 과 상호 배타
+      store.set('alwaysAtBottom', false);
+      applyAlwaysAtBottom(false);
+    }
     applyAlwaysOnTop(!!enabled);
     return store.get('alwaysOnTop');
   });
   ipcMain.handle('get-always-on-top', () => store.get('alwaysOnTop'));
+
+  ipcMain.handle('set-always-at-bottom', (e, enabled) => {
+    store.set('alwaysAtBottom', !!enabled);
+    if (enabled) {
+      // alwaysOnTop 과 상호 배타
+      store.set('alwaysOnTop', false);
+      applyAlwaysOnTop(false);
+    }
+    applyAlwaysAtBottom(!!enabled);
+    return store.get('alwaysAtBottom');
+  });
+  ipcMain.handle('get-always-at-bottom', () => store.get('alwaysAtBottom'));
 
   ipcMain.handle('store-get', (e, key) => store.get(key));
   ipcMain.handle('store-set', (e, key, value) => {

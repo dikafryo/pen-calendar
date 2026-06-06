@@ -170,6 +170,12 @@
       <input type="checkbox" id="alwaysOnTopToggle" checked>
     </div>
 
+    <!-- 항상 뒤에 표시 토글 (바탕화면 고정) -->
+    <div class="settings-row">
+      <span>항상 뒤에 표시</span>
+      <input type="checkbox" id="alwaysAtBottomToggle">
+    </div>
+
     <!-- ── Google 계정 연결 행 ── -->
     <div class="settings-row settings-account">
       <div class="account-info">
@@ -244,6 +250,10 @@
   <div class="ctx-item" id="ctxAlwaysTop">
     <span class="ctx-icon">📌</span>
     <span id="ctxAlwaysTopLabel">항상 위에 표시</span>
+  </div>
+  <div class="ctx-item" id="ctxAlwaysBottom">
+    <span class="ctx-icon">📎</span>
+    <span id="ctxAlwaysBottomLabel">항상 뒤에 표시</span>
   </div>
   <div class="ctx-divider"></div>
   <div class="ctx-item danger" id="ctxQuit">

@@ -7,11 +7,13 @@ const { contextBridge, ipcRenderer } = require('electron');
 // window.electronAPI 로 렌더러에 노출
 // ─────────────────────────────────────────────
 contextBridge.exposeInMainWorld('electronAPI', {
-  // ── 잠금 / 항상 위에 표시 ──────────────
+  // ── 잠금 / 항상 위에 표시 / 항상 뒤에 표시 ──
   setLock: (locked) => ipcRenderer.invoke('set-lock', locked),
   getLock: () => ipcRenderer.invoke('get-lock'),
   setAlwaysOnTop: (enabled) => ipcRenderer.invoke('set-always-on-top', enabled),
   getAlwaysOnTop: () => ipcRenderer.invoke('get-always-on-top'),
+  setAlwaysAtBottom: (enabled) => ipcRenderer.invoke('set-always-at-bottom', enabled),
+  getAlwaysAtBottom: () => ipcRenderer.invoke('get-always-at-bottom'),
   focusWindow: () => ipcRenderer.invoke('focus-window'),
   // 🆕 v26.5.8e 모달 진입·이탈에서 alwaysOnTop 임시 OFF/복원 (키보드 입력 우회)
   modalAotBypass: (suspend) => ipcRenderer.invoke('modal-aot-bypass', suspend),
@@ -89,6 +91,11 @@ contextBridge.exposeInMainWorld('electronAPI', {
     const handler = (_e, enabled) => callback(enabled);
     ipcRenderer.on('always-on-top-changed', handler);
     return () => ipcRenderer.removeListener('always-on-top-changed', handler);
+  },
+  onAlwaysAtBottomChanged: (callback) => {
+    const handler = (_e, enabled) => callback(enabled);
+    ipcRenderer.on('always-at-bottom-changed', handler);
+    return () => ipcRenderer.removeListener('always-at-bottom-changed', handler);
   },
   onSyncStatus: (callback) => {
     // 3,4단계에서 sync-status 이벤트 사용
