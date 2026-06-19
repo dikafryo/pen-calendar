@@ -121,16 +121,29 @@ function applyOrgType() {
   }
 }
 
-/** cal.sw4u.kr 기관 캘린더 URL */
+/**
+ * orgType에 따라 cal.sw4u.kr 달력 해시 결정.
+ *   학교: 학교명만  → 전체 구성원이 하나의 달력 공유
+ *   기관: 기관명_부서명 → 부서별 독립 달력 (부서명 없으면 기관명만)
+ */
+function buildOrgHash() {
+  const name = cleanOrgHash(state.orgName);
+  if (!name) return '';
+  if (state.orgType === 'school') return name;
+  const dept = cleanOrgHash(state.deptName);
+  return dept ? `${name}_${dept}` : name;
+}
+
+/** cal.sw4u.kr 기관/학교 캘린더 URL */
 function orgCalUrl() {
-  const hash = cleanOrgHash(state.orgName);
+  const hash = buildOrgHash();
   return hash ? `https://cal.sw4u.kr/?${hash}` : 'https://cal.sw4u.kr/';
 }
 
 /** 일정을 cal.sw4u.kr에 공유 (POST) */
 async function pushToCalServer(event) {
   if (!state.orgName) return;
-  const hash = cleanOrgHash(state.orgName);
+  const hash = buildOrgHash();
   if (!hash) return;
   try {
     const payload = {
@@ -140,7 +153,8 @@ async function pushToCalServer(event) {
       start: event.startTime || '',
       end: event.endTime || '',
       place: event.location || '',
-      team: state.deptName || '',
+      // 학교: team 없음 / 기관: 부서명을 team으로
+      team: state.orgType === 'school' ? '' : (state.deptName || ''),
       manager: state.userName || ''
     };
     await fetch(`https://cal.sw4u.kr/index.php?api=events&doc=${encodeURIComponent(hash)}&month=${event.date ? event.date.slice(0,7) : ''}`, {
@@ -156,7 +170,7 @@ async function pushToCalServer(event) {
 /** 일정을 cal.sw4u.kr에서 제거 (DELETE) */
 async function removeFromCalServer(event) {
   if (!state.orgName || !event) return;
-  const hash = cleanOrgHash(state.orgName);
+  const hash = buildOrgHash();
   if (!hash) return;
   try {
     const month = event.date ? event.date.slice(0,7) : '';

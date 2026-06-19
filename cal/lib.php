@@ -593,6 +593,24 @@ function doc_exists(string $hash): bool
     return is_dir($dir) && (glob($dir . '/*.json') ?: []) !== [];
 }
 
+/**
+ * 존재하지 않는 달력을 첫 접속 시 자동 생성.
+ * 기관/학교 해시를 그대로 제목으로 사용하며, 생성 후 바로 사용 가능.
+ */
+function auto_create_doc(string $hash): void
+{
+    if (doc_exists($hash)) {
+        return;
+    }
+    $meta = [
+        'hash'      => $hash,
+        'title'     => $hash,   // 기관명 또는 기관명_부서명 이 제목. 관리자가 나중에 변경 가능.
+        'teams'     => [],
+        'updatedAt' => date(DATE_ATOM),
+    ];
+    write_json_file(meta_path($hash), $meta);
+}
+
 function is_admin_path(): bool
 {
     $path = (string) parse_url((string) ($_SERVER['REQUEST_URI'] ?? '/'), PHP_URL_PATH);

@@ -27,9 +27,8 @@ if ($api !== '') {
     if ($hash === '') {
         json_response(['error' => '문서 해시가 필요합니다.'], 400);
     }
-    if (!doc_exists($hash)) {
-        json_response(['error' => '존재하지 않는 달력입니다.'], 404);
-    }
+    // 🆕 존재하지 않는 달력은 첫 접속 시 자동 생성 (기관/학교 모두 적용)
+    auto_create_doc($hash);
 
     // 간부일정: 읽기 전용 가상 달력 — 모든 부서에서 간부 일정만 모아 보여준다.
     if (is_aggregate_hash($hash)) {
