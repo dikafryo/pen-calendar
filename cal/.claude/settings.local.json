@@ -1,0 +1,9 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(curl -sL \"https://docs.google.com/spreadsheets/d/1Tf--VwSbuZ2b5P8tOrZ02WmVvr3QQZvXZuxdzDOwUyQ/export?format=csv&gid=769698193\" -o /tmp/cal_import.csv)",
+      "Read(//tmp/**)",
+      "Bash(docker exec phpfpm *)"
+    ]
+  }
+}

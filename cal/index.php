@@ -1,0 +1,2687 @@
+<?php
+declare(strict_types=1);
+
+require_once __DIR__ . '/lib.php';
+
+if (is_admin_path()) {
+    require_once __DIR__ . '/admin.php';
+    render_admin_page();
+}
+
+$api = (string) ($_GET['api'] ?? '');
+$hash = query_hash();
+
+// 🆕 페이지 요청 (api 없음) → index.html 내용을 직접 출력 (PHP 렌더링 없이 순수 HTML 서비스)
+if ($api === '') {
+    header('Content-Type: text/html; charset=utf-8');
+    readfile(__DIR__ . '/index.html');
+    exit;
+}
+
+if ($api !== '') {
+    // 🆕 변경 이력 API (doc 없이도 동작)
+    if ($api === 'changelog') {
+        json_response(changelog());
+    }
+
+    if ($hash === '') {
+        json_response(['error' => '문서 해시가 필요합니다.'], 400);
+    }
+    if (!doc_exists($hash)) {
+        json_response(['error' => '존재하지 않는 달력입니다.'], 404);
+    }
+
+    // 간부일정: 읽기 전용 가상 달력 — 모든 부서에서 간부 일정만 모아 보여준다.
+    if (is_aggregate_hash($hash)) {
+        if ($_SERVER['REQUEST_METHOD'] !== 'GET') {
+            json_response(['error' => '간부일정은 읽기 전용 달력입니다.'], 403);
+        }
+        if ($api === 'meta') {
+            json_response(aggregate_meta());
+        }
+        if ($api === 'events') {
+            json_response(aggregate_events((string) ($_GET['month'] ?? date('Y-m'))));
+        }
+        if ($api === 'search') {
+            $q = mb_strtolower(trim((string) ($_GET['q'] ?? '')));
+            if ($q === '') {
+                json_response([]);
+            }
+            $limit = min(200, max(1, (int) ($_GET['limit'] ?? 100)));
+            json_response(aggregate_search($q, $limit));
+        }
+        if ($api === 'logo') {
+            http_response_code(404);
+            exit;
+        }
+        json_response(['error' => '알 수 없는 API입니다.'], 404);
+    }
+
+    if ($api === 'meta') {
+        $path = meta_path($hash);
+        $meta = read_json_file($path, default_meta($hash));
+
+        if ($_SERVER['REQUEST_METHOD'] === 'POST') {
+            $input = read_input();
+            $teams = $input['teams'] ?? $meta['teams'];
+            $teams = is_array($teams) ? $teams : [];
+            $teams = array_values(array_filter(array_map(
+                static fn($team) => mb_substr(trim((string) $team), 0, 80),
+                $teams
+            )));
+
+            $meta = [
+                'hash' => $hash,
+                'title' => mb_substr(trim((string) ($input['title'] ?? $meta['title'] ?? '부서 일정표')), 0, 80),
+                'teams' => array_values(array_unique($teams)),
+                'updatedAt' => date(DATE_ATOM),
+            ];
+            write_json_file($path, $meta);
+        }
+
+        json_response($meta);
+    }
+
+    if ($api === 'events') {
+        $month = valid_month((string) ($_GET['month'] ?? date('Y-m')));
+        $path = month_path($hash, $month);
+        $events = read_json_file($path, []);
+        $events = is_array($events) ? $events : [];
+
+        if ($_SERVER['REQUEST_METHOD'] === 'POST') {
+            $input = read_input();
+            $actor = clean_actor($input['_actor'] ?? '') ?: '내부';
+
+            $event = normalize_event($input);
+            $event['modifiedBy'] = $actor;
+            $eventMonth = substr($event['date'], 0, 7);
+            $targetPath = month_path($hash, valid_month($eventMonth));
+            $targetEvents = read_json_file($targetPath, []);
+            $targetEvents = is_array($targetEvents) ? $targetEvents : [];
+            $before = null;
+
+            foreach ($targetEvents as $item) {
+                if (($item['id'] ?? '') === $event['id']) {
+                    $before = $item;
+                    break;
+                }
+            }
+            if ($before === null) {
+                foreach ($events as $item) {
+                    if (($item['id'] ?? '') === $event['id']) {
+                        $before = $item;
+                        break;
+                    }
+                }
+            }
+
+            $targetEvents = array_values(array_filter(
+                $targetEvents,
+                static fn($item) => ($item['id'] ?? '') !== $event['id']
+            ));
+            $targetEvents[] = $event;
+            sort_events($targetEvents);
+            write_json_file($targetPath, $targetEvents);
+
+            if ($targetPath !== $path) {
+                $events = array_values(array_filter(
+                    $events,
+                    static fn($item) => ($item['id'] ?? '') !== $event['id']
+                ));
+                sort_events($events);
+                write_json_file($path, $events);
+            }
+
+            append_audit_log($hash, $before ? 'update' : 'create', $actor, $event, $before);
+            json_response(['event' => $event]);
+        }
+
+        if ($_SERVER['REQUEST_METHOD'] === 'DELETE') {
+            $id = trim((string) ($_GET['id'] ?? ''));
+            $actor = clean_actor($_GET['_actor'] ?? '') ?: '내부';
+            $before = null;
+            foreach ($events as $item) {
+                if (($item['id'] ?? '') === $id) {
+                    $before = $item;
+                    break;
+                }
+            }
+            $events = array_values(array_filter($events, static fn($item) => ($item['id'] ?? '') !== $id));
+            sort_events($events);
+            write_json_file($path, $events);
+            append_audit_log($hash, 'delete', $actor, null, $before);
+            json_response(['ok' => true]);
+        }
+
+        sort_events($events);
+        json_response($events);
+    }
+
+    if ($api === 'sheet-push') {
+        if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
+            json_response(['error' => 'POST 요청만 가능합니다.'], 405);
+        }
+
+        $meta = read_json_file(meta_path($hash), default_meta($hash));
+        $meta = is_array($meta) ? $meta : default_meta($hash);
+        $events = read_all_events($hash);
+        $rows = sheet_rows($hash, $meta, $events);
+        $payload = [
+            'sheetId' => GOOGLE_SHEET_ID,
+            'gid' => GOOGLE_SHEET_GID,
+            'docHash' => $hash,
+            'title' => (string) ($meta['title'] ?? ''),
+            'pushedAt' => date(DATE_ATOM),
+            'replaceAll' => true,
+            'rows' => $rows,
+        ];
+
+        if (GOOGLE_SHEET_PUSH_URL !== '') {
+            $result = post_json(GOOGLE_SHEET_PUSH_URL, $payload);
+            if (!$result['ok']) {
+                json_response([
+                    'error' => '구글 시트 전송에 실패했습니다.',
+                    'detail' => $result,
+                ], 502);
+            }
+            json_response([
+                'ok' => true,
+                'mode' => 'push',
+                'count' => count($events),
+                'sheetUrl' => 'https://docs.google.com/spreadsheets/d/' . GOOGLE_SHEET_ID . '/edit?gid=' . GOOGLE_SHEET_GID,
+            ]);
+        }
+
+        json_response([
+            'ok' => true,
+            'mode' => 'csv',
+            'count' => count($events),
+            'filename' => $hash . '-calendar-backup-' . date('Ymd-His') . '.csv',
+            'csv' => rows_to_csv($rows),
+            'message' => '구글 시트 쓰기 URL이 설정되지 않아 CSV 백업 파일을 생성했습니다.',
+            'sheetUrl' => 'https://docs.google.com/spreadsheets/d/' . GOOGLE_SHEET_ID . '/edit?gid=' . GOOGLE_SHEET_GID,
+        ]);
+    }
+
+    if ($api === 'logo') {
+        $logoPath = doc_dir($hash) . '/logo';
+
+        if ($_SERVER['REQUEST_METHOD'] === 'GET') {
+            $meta = read_json_file(meta_path($hash), default_meta($hash));
+            $mime = is_array($meta) ? (string) ($meta['logoMime'] ?? '') : '';
+            if ($mime === '' || !is_file($logoPath)) {
+                http_response_code(404);
+                exit;
+            }
+            header('Content-Type: ' . $mime);
+            header('Cache-Control: no-cache');
+            readfile($logoPath);
+            exit;
+        }
+
+        if ($_SERVER['REQUEST_METHOD'] === 'POST') {
+            $file = $_FILES['logo'] ?? null;
+            if (!$file || (int) ($file['error'] ?? 1) !== UPLOAD_ERR_OK) {
+                json_response(['error' => '파일 업로드에 실패했습니다.'], 400);
+            }
+            if ((int) $file['size'] > 2 * 1024 * 1024) {
+                json_response(['error' => '파일 크기는 2MB 이하여야 합니다.'], 400);
+            }
+            $allowed = ['image/jpeg', 'image/png', 'image/gif', 'image/webp', 'image/svg+xml'];
+            $finfo = new finfo(FILEINFO_MIME_TYPE);
+            $mime = (string) $finfo->file($file['tmp_name']);
+            if (!in_array($mime, $allowed, true)) {
+                json_response(['error' => '이미지 파일(JPG·PNG·GIF·WEBP·SVG)만 업로드할 수 있습니다.'], 400);
+            }
+            if (!move_uploaded_file($file['tmp_name'], $logoPath)) {
+                json_response(['error' => '파일 저장에 실패했습니다.'], 500);
+            }
+            $metaPath = meta_path($hash);
+            $meta = read_json_file($metaPath, default_meta($hash));
+            $meta = is_array($meta) ? $meta : default_meta($hash);
+            $meta['logoMime'] = $mime;
+            $meta['updatedAt'] = date(DATE_ATOM);
+            write_json_file($metaPath, $meta);
+            json_response(['ok' => true, 'mime' => $mime]);
+        }
+
+        json_response(['error' => '지원하지 않는 메서드입니다.'], 405);
+    }
+
+    if ($api === 'search') {
+        $q = mb_strtolower(trim((string) ($_GET['q'] ?? '')));
+        if ($q === '') {
+            json_response([]);
+        }
+        $limit = min(200, max(1, (int) ($_GET['limit'] ?? 100)));
+        $results = [];
+        foreach (glob(doc_dir($hash) . '/????-??.json') ?: [] as $path) {
+            $monthEvents = read_json_file($path, []);
+            if (!is_array($monthEvents)) {
+                continue;
+            }
+            foreach ($monthEvents as $event) {
+                if (!is_array($event)) {
+                    continue;
+                }
+                $haystack = mb_strtolower(implode(' ', array_filter([
+                    (string) ($event['title'] ?? ''),
+                    (string) ($event['place'] ?? ''),
+                    (string) ($event['manager'] ?? ''),
+                    (string) ($event['team'] ?? ''),
+                ])));
+                if (mb_strpos($haystack, $q) !== false) {
+                    $results[] = $event;
+                }
+            }
+        }
+        sort_events($results);
+        json_response(array_slice($results, 0, $limit));
+    }
+
+    json_response(['error' => '알 수 없는 API입니다.'], 404);
+}
+
+// Bare root (no hash in query or path) → redirect to /?default
+if (raw_query_hash() === '') {
+    header('Location: /?default');
+    exit;
+}
+
+// Non-existent calendar → show message and redirect to /?default
+if (!doc_exists($hash)) {
+    $safeHash = h($hash);
+    ?>
+<!doctype html>
+<html lang="ko">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>존재하지 않는 달력</title>
+    <meta http-equiv="refresh" content="4;url=/?default">
+    <style>
+        body {
+            margin: 0;
+            min-height: 100vh;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            background: #f5f7fb;
+            font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+            color: #1f2933;
+        }
+        .box {
+            background: #fff;
+            border: 1px solid #d9e0e7;
+            border-radius: 12px;
+            padding: 40px 48px;
+            text-align: center;
+            max-width: 420px;
+        }
+        h1 { margin: 0 0 10px; font-size: 22px; }
+        p { margin: 0 0 20px; color: #667085; font-size: 15px; line-height: 1.6; }
+        a {
+            display: inline-block;
+            background: #0f766e;
+            color: #fff;
+            text-decoration: none;
+            font-weight: 700;
+            padding: 10px 24px;
+            border-radius: 6px;
+        }
+    </style>
+</head>
+<body>
+    <div class="box">
+        <h1>존재하지 않는 달력입니다</h1>
+        <p><code><?= $safeHash ?></code> 달력을 찾을 수 없습니다.<br>잠시 후 기본 달력으로 이동합니다.</p>
+        <a href="/?default">기본 달력으로 이동</a>
+    </div>
+</body>
+</html>
+    <?php
+    exit;
+}
+
+$docHash = htmlspecialchars($hash, ENT_QUOTES, 'UTF-8');
+?>
+<!doctype html>
+<html lang="ko">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>부서 일정표</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Noto+Serif+KR:wght@600&display=swap" rel="stylesheet">
+    <style>
+        :root {
+            color-scheme: light;
+            --bg: #f5f7fb;
+            --panel: #ffffff;
+            --line: #d9e0ea;
+            --text: #1f2937;
+            --muted: #687386;
+            --accent: #0f766e;
+            --accent-soft: #e0f2f1;
+            --danger: #b42318;
+            --focus: #2563eb;
+        }
+
+        * { box-sizing: border-box; }
+        body {
+            margin: 0;
+            min-height: 100vh;
+            background: var(--bg);
+            color: var(--text);
+            font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+        }
+
+        button, input, select, textarea {
+            font: inherit;
+        }
+
+        button {
+            border: 1px solid var(--line);
+            background: #fff;
+            color: var(--text);
+            border-radius: 6px;
+            min-height: 36px;
+            padding: 0 12px;
+            cursor: pointer;
+        }
+
+        button:hover { border-color: #9aa8bc; }
+        button.primary {
+            background: var(--accent);
+            border-color: var(--accent);
+            color: #fff;
+        }
+        button.danger {
+            color: var(--danger);
+            border-color: #f0b7b2;
+        }
+
+        input, select, textarea {
+            width: 100%;
+            border: 1px solid var(--line);
+            border-radius: 6px;
+            min-height: 38px;
+            padding: 8px 10px;
+            background: #fff;
+            color: var(--text);
+        }
+
+        input:focus, select:focus, textarea:focus, button:focus {
+            outline: 2px solid color-mix(in srgb, var(--focus), transparent 70%);
+            outline-offset: 1px;
+        }
+
+        .app {
+            width: 100%;
+            padding: 18px;
+            padding-top: 0;
+        }
+
+        .app.full-view {
+            width: 100%;
+            max-width: none;
+        }
+
+        .topbar {
+            display: grid;
+            grid-template-columns: minmax(220px, 1fr) auto minmax(220px, 1fr);
+            gap: 14px;
+            align-items: center;
+            margin-bottom: 0;
+            position: sticky;
+            top: 0;
+            z-index: 30;
+            background: var(--bg);
+            padding: 6px 0;
+        }
+
+        .title-row {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 10px;
+            align-items: center;
+        }
+
+        .title-group {
+            display: flex;
+            flex-direction: column;
+            gap: 1px;
+            min-width: 0;
+        }
+
+        .title-line {
+            display: inline-flex;
+            align-items: baseline;
+            gap: 6px;
+            flex-wrap: wrap;
+            margin: 0;
+        }
+
+        .current-ym {
+            font-size: 0.7em;
+            font-weight: 700;
+            color: var(--muted);
+            letter-spacing: 0.02em;
+            line-height: 1.2;
+            user-select: none;
+        }
+
+        .logo-btn {
+            flex-shrink: 0;
+            height: 44px;
+            min-width: 44px;
+            padding: 3px 8px;
+            border: 1.5px dashed var(--line);
+            border-radius: 8px;
+            background: transparent;
+            color: var(--muted);
+            font-size: 12px;
+            font-weight: 700;
+            cursor: pointer;
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            gap: 4px;
+            transition: border-color 0.15s, color 0.15s;
+        }
+
+        .logo-btn:hover {
+            border-color: var(--accent);
+            color: var(--accent);
+        }
+
+        .logo-btn.has-logo {
+            border: none;
+            padding: 0;
+            border-radius: 6px;
+            overflow: hidden;
+            background: transparent;
+        }
+
+        .logo-btn.has-logo:hover {
+            opacity: 0.82;
+        }
+
+        #logoImg {
+            display: none;
+            max-height: 44px;
+            max-width: 160px;
+            width: auto;
+            height: auto;
+            object-fit: contain;
+            border-radius: 4px;
+        }
+
+        #logoPlaceholder {
+            white-space: nowrap;
+        }
+
+        h1 {
+            margin: 0;
+            font-size: clamp(16px, 2vw, 22px);
+            font-family: 'Noto Serif KR', serif;
+            font-weight: 600;
+            letter-spacing: 0.03em;
+        }
+
+        .toolbar {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 6px;
+            align-items: center;
+            justify-content: center;
+            justify-self: center;
+        }
+
+        .month-nav {
+            display: inline-flex;
+            align-items: center;
+            gap: 3px;
+            background: #fff;
+            border: 1px solid var(--line);
+            border-radius: 8px;
+            padding: 3px;
+        }
+
+        .nav-btn {
+            width: 30px;
+            min-height: 30px;
+            padding: 0;
+            font-size: 16px;
+            font-weight: 900;
+            border-radius: 5px;
+            border: none;
+            background: transparent;
+            color: var(--muted);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            cursor: pointer;
+            line-height: 1;
+        }
+
+        .nav-btn:hover {
+            background: var(--bg);
+            color: var(--text);
+        }
+
+        .nav-divider {
+            width: 1px;
+            height: 18px;
+            background: var(--line);
+            margin: 0 2px;
+        }
+
+        .today-btn {
+            min-height: 30px;
+            padding: 0 12px;
+            border: 1px solid var(--line);
+            border-radius: 6px;
+            background: #fff;
+            color: var(--accent);
+            font-weight: 700;
+            font-size: 13px;
+            cursor: pointer;
+            margin: 0 3px;
+        }
+
+        .today-btn:hover {
+            background: var(--accent-soft);
+            border-color: var(--accent);
+        }
+
+        .view-switch {
+            display: inline-flex;
+            gap: 6px;
+            padding: 4px;
+            border: 1px solid var(--line);
+            border-radius: 8px;
+            background: #fff;
+        }
+
+        .view-switch button {
+            min-height: 32px;
+            border-color: transparent;
+            padding: 0 14px;
+            font-weight: 800;
+        }
+
+        .view-switch button.active {
+            background: var(--accent);
+            border-color: var(--accent);
+            color: #fff;
+        }
+
+        .team-filter-wrap {
+            position: relative;
+        }
+
+        .team-filter-btn {
+            min-height: 32px;
+            border-color: transparent;
+            padding: 0 14px;
+            font-weight: 800;
+            white-space: nowrap;
+        }
+
+        .team-filter-btn.active {
+            background: var(--accent);
+            border-color: var(--accent);
+            color: #fff;
+        }
+
+        .team-filter-dropdown {
+            position: absolute;
+            top: calc(100% + 6px);
+            left: 50%;
+            transform: translateX(-50%);
+            min-width: 130px;
+            background: #fff;
+            border: 1px solid var(--line);
+            border-radius: 10px;
+            box-shadow: 0 6px 20px rgba(0,0,0,0.13);
+            z-index: 300;
+            overflow: hidden;
+        }
+
+        .team-filter-option {
+            display: block;
+            width: 100%;
+            padding: 10px 18px;
+            text-align: left;
+            border: none;
+            border-radius: 0;
+            background: transparent;
+            font-size: 14px;
+            font-weight: 500;
+            min-height: unset;
+            cursor: pointer;
+            color: var(--text);
+        }
+
+        .team-filter-option + .team-filter-option {
+            border-top: 1px solid var(--line);
+        }
+
+        .team-filter-option:hover { background: var(--bg); }
+
+        .team-filter-option.active {
+            font-weight: 700;
+            color: var(--accent);
+        }
+
+        .topbar-right {
+            display: flex;
+            flex-wrap: wrap;
+            align-items: center;
+            justify-content: flex-end;
+            gap: 6px;
+        }
+
+        .layout {
+            display: grid;
+            grid-template-columns: 1fr;
+            gap: 0;
+            align-items: start;
+        }
+
+        .app.full-view .layout {
+            grid-template-columns: 1fr;
+        }
+
+        .app.full-view .calendar-wrap {
+            display: none;
+        }
+
+        .app.full-view .full-schedule {
+            display: block;
+        }
+
+        .calendar-wrap, .full-schedule {
+            background: var(--panel);
+            border: 1px solid var(--line);
+            border-radius: 8px;
+        }
+
+        .full-schedule { display: none; overflow-x: auto; }
+        .schedule-row { display: grid; grid-template-columns: 118px minmax(0, 1fr); border-bottom: 1px solid var(--line); min-width: 100%; }
+        .schedule-row:last-child { border-bottom: 0; }
+        .schedule-date {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 8px;
+            padding: 6px 8px;
+            border-right: 1px solid var(--line);
+            background: #f8fafc;
+            font-size: 13px;
+            font-weight: 900;
+            line-height: 1.35;
+        }
+        .schedule-date small { display: block; color: var(--muted); font-size: 12px; font-weight: 700; }
+        .schedule-items { display: flex; gap: 8px; align-items: stretch; overflow-x: auto; padding: 6px 8px; min-height: 38px; }
+        .schedule-items .event { width: 250px; flex: 0 0 250px; margin-bottom: 0; }
+
+        .weekday, .calendar {
+            display: grid;
+            grid-template-columns: repeat(7, minmax(0, 1fr));
+        }
+
+        .calendar { grid-auto-rows: auto; }
+
+        .weekday {
+            border-bottom: 1px solid var(--line);
+            color: var(--muted);
+            font-size: 13px;
+            font-weight: 700;
+            position: sticky;
+            top: 56px;
+            z-index: 18;
+            background: #fff;
+        }
+
+        .weekday div {
+            min-height: 38px;
+            padding: 10px;
+            text-align: center;
+        }
+
+        .weekday .sun,
+        .day.weekend-sun,
+        .schedule-row.weekend-sun .schedule-date,
+        .schedule-row.weekend-sun .schedule-items {
+            background: #fff5f5;
+            color: #b91c1c;
+        }
+
+        .weekday .sat,
+        .day.weekend-sat,
+        .schedule-row.weekend-sat .schedule-date,
+        .schedule-row.weekend-sat .schedule-items {
+            background: #f5f9ff;
+            color: #1d4ed8;
+        }
+
+        .day {
+            min-height: 58px;
+            border-right: 1px solid var(--line);
+            border-bottom: 1px solid var(--line);
+            padding: 6px;
+            background: #fff;
+        }
+
+        .day:nth-child(7n) { border-right: 0; }
+        .day.other { background: #f9fafc; color: #9aa3b2; }
+        .day.today {
+            box-shadow: inset 0 0 0 2px var(--accent);
+            background: #f3f4f6;
+        }
+
+        .day.weekend-sun .day-head span {
+            color: #b91c1c;
+            font-weight: 900;
+        }
+
+        .day.weekend-sat .day-head span {
+            color: #1d4ed8;
+            font-weight: 900;
+        }
+
+        .schedule-row.weekend-sun .schedule-date small {
+            color: #b91c1c;
+        }
+
+        .schedule-row.weekend-sat .schedule-date small {
+            color: #1d4ed8;
+        }
+
+        .schedule-row.today .schedule-date,
+        .schedule-row.today .schedule-items {
+            background: #f3f4f6;
+            box-shadow: inset 0 0 0 2px #6b7280;
+        }
+
+        .day-head {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 8px;
+            min-height: 24px;
+            margin-bottom: 6px;
+            font-size: 13px;
+            font-weight: 700;
+        }
+
+        .add-day, .add-schedule {
+            width: 28px;
+            min-height: 28px;
+            padding: 0;
+            font-weight: 800;
+            color: var(--accent);
+        }
+
+        .event {
+            border: 1px solid #c7ddd9;
+            border-left: 4px solid var(--accent);
+            background: var(--accent-soft);
+            border-radius: 6px;
+            padding: 6px;
+            margin-bottom: 6px;
+            cursor: pointer;
+        }
+
+        .event.selected {
+            outline: 4px solid var(--focus);
+            outline-offset: 2px;
+            box-shadow: 0 0 0 6px rgba(37, 99, 235, 0.15);
+            animation: event-highlight-in 0.35s ease-out;
+        }
+
+        @keyframes event-highlight-in {
+            from {
+                outline-width: 7px;
+                box-shadow: 0 0 0 10px rgba(37, 99, 235, 0.35);
+            }
+            to {
+                outline-width: 4px;
+                box-shadow: 0 0 0 6px rgba(37, 99, 235, 0.15);
+            }
+        }
+
+        .event.team-color-1 {
+            background: #fee2e2;
+            border-color: #fecaca;
+            border-left-color: #ef4444;
+        }
+
+        .event.team-color-2 {
+            background: #dcfce7;
+            border-color: #bbf7d0;
+            border-left-color: #22c55e;
+        }
+
+        .event.team-color-3 {
+            background: #dbeafe;
+            border-color: #bfdbfe;
+            border-left-color: #3b82f6;
+        }
+
+        .event.team-color-4 {
+            background: #f3e8ff;
+            border-color: #e9d5ff;
+            border-left-color: #a855f7;
+        }
+
+        .event.external-priority {
+            background: #fef9c3;
+            border-color: #fde68a;
+            border-left-color: #eab308;
+        }
+
+        .event-time {
+            font-size: 12px;
+            font-weight: 800;
+            color: #0b615b;
+            margin-bottom: 2px;
+        }
+
+        .event-title {
+            font-size: 13px;
+            font-weight: 800;
+            line-height: 1.35;
+            word-break: break-word;
+        }
+
+        .event-place {
+            display: flex;
+            align-items: flex-start;
+            gap: 5px;
+            margin-top: 3px;
+            color: #111827;
+            font-size: 13px;
+            font-weight: 400;
+            line-height: 1.35;
+            word-break: break-word;
+        }
+
+        .place-icon {
+            width: 16px;
+            height: 16px;
+            flex: 0 0 16px;
+            color: #0f766e;
+            margin-top: 1px;
+        }
+
+        .place-icon svg {
+            display: block;
+            width: 16px;
+            height: 16px;
+            stroke: currentColor;
+            fill: none;
+            stroke-width: 2;
+            stroke-linecap: round;
+            stroke-linejoin: round;
+        }
+
+        .event-meta {
+            margin-top: 4px;
+            color: #374151;
+            font-size: 12px;
+            font-weight: 800;
+            line-height: 1.35;
+            word-break: break-word;
+        }
+
+        .target-badges {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 4px;
+            margin-top: 5px;
+        }
+
+        .target-badge {
+            display: inline-flex;
+            align-items: center;
+            min-height: 22px;
+            border: 1px solid transparent;
+            border-radius: 999px;
+            padding: 2px 7px;
+            font-size: 12px;
+            font-weight: 900;
+            line-height: 1.2;
+            box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.7) inset;
+        }
+
+        .target-education-chief {
+            background: #991b1b;
+            border-color: #7f1d1d;
+            color: #fff;
+        }
+
+        .target-deputy-chief {
+            background: #854d0e;
+            border-color: #713f12;
+            color: #fff7ed;
+        }
+
+        .target-director {
+            background: #1d4ed8;
+            border-color: #1e40af;
+            color: #eff6ff;
+        }
+
+        .target-manager {
+            background: #7e22ce;
+            border-color: #6b21a8;
+            color: #faf5ff;
+        }
+
+        .editor {
+            padding: 14px;
+        }
+
+        .section-title {
+            margin: 0 0 10px;
+            font-size: 18px;
+        }
+
+        .form-grid {
+            display: grid;
+            gap: 10px;
+        }
+
+        .two {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 10px;
+        }
+
+        label {
+            display: grid;
+            gap: 5px;
+            color: var(--muted);
+            font-size: 13px;
+            font-weight: 700;
+        }
+
+        .checks {
+            display: grid;
+            grid-template-columns: repeat(4, minmax(0, 1fr));
+            gap: 8px;
+        }
+
+        .team-buttons {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 8px;
+        }
+
+        .team-button {
+            min-height: 36px;
+            border-color: var(--line);
+            color: var(--text);
+            background: #fff;
+            font-weight: 800;
+        }
+
+        .team-button.team-color-1 { background: #fee2e2; border-color: #fecaca; }
+        .team-button.team-color-2 { background: #dcfce7; border-color: #bbf7d0; }
+        .team-button.team-color-3 { background: #dbeafe; border-color: #bfdbfe; }
+        .team-button.team-color-4 { background: #f3e8ff; border-color: #e9d5ff; }
+        .team-button.active.team-color-1 { background: #ef4444; border-color: #b91c1c; color: #fff; }
+        .team-button.active.team-color-2 { background: #22c55e; border-color: #15803d; color: #052e16; }
+        .team-button.active.team-color-3 { background: #3b82f6; border-color: #1d4ed8; color: #fff; }
+        .team-button.active.team-color-4 { background: #a855f7; border-color: #7e22ce; color: #fff; }
+
+        .target-button {
+            min-height: 34px;
+            padding: 6px 8px;
+            border: 1px solid var(--line);
+            border-radius: 6px;
+            color: var(--text);
+            font-size: 14px;
+            font-weight: 800;
+            background: #fff;
+        }
+
+        .target-button.target-education-chief {
+            background: #fee2e2;
+            border-color: #fecaca;
+            color: #7f1d1d;
+        }
+
+        .target-button.target-deputy-chief {
+            background: #fef3c7;
+            border-color: #fde68a;
+            color: #713f12;
+        }
+
+        .target-button.target-director {
+            background: #dbeafe;
+            border-color: #bfdbfe;
+            color: #1e40af;
+        }
+
+        .target-button.target-manager {
+            background: #f3e8ff;
+            border-color: #e9d5ff;
+            color: #6b21a8;
+        }
+
+        .target-button.active.target-education-chief {
+            background: #991b1b;
+            border-color: #7f1d1d;
+            color: #fff;
+        }
+
+        .target-button.active.target-deputy-chief {
+            background: #854d0e;
+            border-color: #713f12;
+            color: #fff7ed;
+        }
+
+        .target-button.active.target-director {
+            background: #1d4ed8;
+            border-color: #1e40af;
+            color: #eff6ff;
+        }
+
+        .target-button.active.target-manager {
+            background: #7e22ce;
+            border-color: #6b21a8;
+            color: #faf5ff;
+        }
+
+        .actions {
+            display: flex;
+            gap: 8px;
+            align-items: center;
+            margin-top: 2px;
+        }
+        .actions-right {
+            display: flex;
+            gap: 8px;
+            margin-left: auto;
+        }
+
+        .hint {
+            margin: 6px 0 0;
+            color: var(--muted);
+            font-size: 12px;
+            line-height: 1.45;
+        }
+
+        .modal {
+            position: fixed;
+            inset: 0;
+            z-index: 20;
+            display: none;
+            align-items: center;
+            justify-content: center;
+            padding: 18px;
+            background: rgba(15, 23, 42, 0.42);
+        }
+
+        .modal.open {
+            display: flex;
+        }
+
+        .modal-panel {
+            width: min(520px, 100%);
+            max-height: calc(100vh - 36px);
+            overflow: auto;
+            background: var(--panel);
+            border: 1px solid var(--line);
+            border-radius: 8px;
+            box-shadow: 0 20px 60px rgba(15, 23, 42, 0.25);
+        }
+
+        .modal-head {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 12px;
+            padding: 14px;
+            border-bottom: 1px solid var(--line);
+        }
+
+        .modal-head .section-title {
+            margin: 0;
+        }
+
+        .icon-button {
+            width: 36px;
+            min-height: 36px;
+            padding: 0;
+            font-size: 20px;
+            line-height: 1;
+        }
+
+        .empty {
+            color: var(--muted);
+            font-size: 12px;
+            padding: 2px 0;
+        }
+
+        .search-btn {
+            min-height: 34px;
+            padding: 0 12px;
+            border: 1px solid var(--line);
+            border-radius: 6px;
+            background: #fff;
+            color: var(--muted);
+            font-size: 13px;
+            font-weight: 700;
+            cursor: pointer;
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+        }
+
+        .search-btn:hover {
+            border-color: #9aa8bc;
+            color: var(--text);
+        }
+
+        .search-btn svg {
+            width: 15px;
+            height: 15px;
+            stroke: currentColor;
+            fill: none;
+            stroke-width: 2.2;
+            stroke-linecap: round;
+            stroke-linejoin: round;
+            flex-shrink: 0;
+        }
+
+        .help-btn {
+            width: 34px;
+            min-height: 34px;
+            padding: 0;
+            border: 1px solid var(--line);
+            border-radius: 50%;
+            background: #fff;
+            color: var(--muted);
+            font-size: 16px;
+            font-weight: 800;
+            cursor: pointer;
+            flex-shrink: 0;
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+        }
+
+        .help-btn:hover {
+            border-color: var(--accent);
+            color: var(--accent);
+        }
+
+        .admin-link {
+            min-height: 32px;
+            padding: 0 12px;
+            border: 1px solid var(--line);
+            border-radius: 6px;
+            background: #fff;
+            color: var(--muted);
+            font-size: 13px;
+            font-weight: 700;
+            cursor: pointer;
+            display: inline-flex;
+            align-items: center;
+            text-decoration: none;
+            flex-shrink: 0;
+        }
+
+        .admin-link:hover {
+            border-color: var(--accent);
+            color: var(--accent);
+        }
+
+        .changelog-body {
+            flex: 1;
+            min-height: 0;
+            padding: 8px 6px 4px;
+            overflow-y: auto;
+        }
+
+        .changelog-entry {
+            padding: 12px 8px;
+            border-bottom: 1px solid var(--line);
+        }
+
+        .changelog-entry:last-child {
+            border-bottom: none;
+        }
+
+        .changelog-ver {
+            display: flex;
+            align-items: baseline;
+            gap: 10px;
+            margin-bottom: 6px;
+            flex-wrap: wrap;
+        }
+
+        .changelog-ver strong {
+            font-size: 16px;
+            color: var(--accent);
+        }
+
+        .changelog-ver span {
+            font-size: 12px;
+            color: var(--muted);
+            font-weight: 700;
+        }
+
+        .changelog-entry ul {
+            margin: 0;
+            padding-left: 18px;
+        }
+
+        .changelog-entry li {
+            font-size: 14px;
+            line-height: 1.6;
+            color: var(--text);
+        }
+
+        .search-modal {
+            position: fixed;
+            inset: 0;
+            z-index: 40;
+            display: none;
+            padding: 60px 18px 18px;
+            background: rgba(15, 23, 42, 0.42);
+            align-items: flex-start;
+            justify-content: center;
+        }
+
+        .search-modal.open {
+            display: flex;
+        }
+
+        .search-panel {
+            width: min(620px, 100%);
+            max-height: calc(100vh - 80px);
+            display: flex;
+            flex-direction: column;
+            background: var(--panel);
+            border: 1px solid var(--line);
+            border-radius: 10px;
+            box-shadow: 0 24px 64px rgba(15, 23, 42, 0.28);
+            overflow: hidden;
+        }
+
+        .search-head {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            padding: 12px 14px;
+            border-bottom: 1px solid var(--line);
+        }
+
+        .search-head svg {
+            width: 18px;
+            height: 18px;
+            stroke: var(--muted);
+            fill: none;
+            stroke-width: 2.2;
+            stroke-linecap: round;
+            stroke-linejoin: round;
+            flex-shrink: 0;
+        }
+
+        #searchInput {
+            flex: 1;
+            border: none;
+            outline: none;
+            font-size: 16px;
+            font-weight: 500;
+            background: transparent;
+            color: var(--text);
+            min-height: 36px;
+            padding: 0;
+            width: auto;
+        }
+
+        #searchInput::placeholder {
+            color: var(--muted);
+            font-weight: 400;
+        }
+
+        .search-close {
+            width: 32px;
+            min-height: 32px;
+            padding: 0;
+            font-size: 18px;
+            border: none;
+            background: transparent;
+            color: var(--muted);
+            cursor: pointer;
+            border-radius: 5px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+
+        .search-close:hover {
+            background: var(--bg);
+            color: var(--text);
+        }
+
+        .search-body {
+            overflow-y: auto;
+            flex: 1;
+        }
+
+        .search-status {
+            padding: 14px 16px;
+            color: var(--muted);
+            font-size: 13px;
+            font-weight: 700;
+        }
+
+        .search-result-item {
+            display: grid;
+            grid-template-columns: 90px 1fr;
+            gap: 0 12px;
+            align-items: start;
+            padding: 10px 16px;
+            border-bottom: 1px solid var(--line);
+            cursor: pointer;
+            transition: background 0.1s;
+        }
+
+        .search-result-item:last-child {
+            border-bottom: none;
+        }
+
+        .search-result-item:hover {
+            background: var(--bg);
+        }
+
+        .search-result-date {
+            font-size: 12px;
+            font-weight: 700;
+            color: var(--muted);
+            padding-top: 2px;
+            white-space: nowrap;
+        }
+
+        .search-result-date strong {
+            display: block;
+            font-size: 14px;
+            color: var(--text);
+            margin-bottom: 2px;
+        }
+
+        .search-result-title {
+            font-size: 14px;
+            font-weight: 700;
+            color: var(--text);
+            line-height: 1.4;
+            margin-bottom: 3px;
+        }
+
+        .search-result-title mark {
+            background: #fef08a;
+            color: #713f12;
+            border-radius: 2px;
+            padding: 0 1px;
+        }
+
+        .search-result-meta {
+            font-size: 12px;
+            color: var(--muted);
+            font-weight: 600;
+            line-height: 1.4;
+        }
+
+        .search-result-meta mark {
+            background: #fef08a;
+            color: #713f12;
+            border-radius: 2px;
+            padding: 0 1px;
+        }
+
+        @media (max-width: 980px) {
+            .topbar, .layout {
+                grid-template-columns: 1fr;
+            }
+            .toolbar {
+                justify-content: flex-start;
+            }
+            .view-switch {
+                justify-self: start;
+            }
+            .topbar-right {
+                justify-content: flex-start;
+            }
+            .view-hint {
+                text-align: left;
+                white-space: normal;
+            }
+            .editor {
+                position: static;
+            }
+            .day { min-height: 58px; }
+        }
+
+        @media (max-width: 720px) {
+            .app {
+                padding: 10px;
+                padding-top: 0;
+            }
+            .checks {
+                grid-template-columns: 1fr 1fr;
+            }
+        }
+    </style>
+</head>
+<body>
+<main class="app full-view">
+    <header class="topbar">
+        <div>
+            <div class="title-row">
+                <button type="button" class="logo-btn" id="logoButton" title="로고 업로드">
+                    <img id="logoImg" alt="로고">
+                    <span id="logoPlaceholder">＋ 로고추가</span>
+                </button>
+                <input type="file" id="logoFileInput" accept="image/*" style="display:none" aria-hidden="true">
+                <div class="title-group">
+                    <h1 class="title-line"><span id="pageTitle">부서 일정표</span><span id="currentYearMonth" class="current-ym"></span></h1>
+                </div>
+            </div>
+        </div>
+        <nav class="toolbar" aria-label="월 이동">
+            <div class="month-nav">
+                <button type="button" class="nav-btn" data-shift="-12" title="1년 이전">«</button>
+                <button type="button" class="nav-btn" data-shift="-1" title="1개월 이전">‹</button>
+                <button type="button" id="todayButton" class="today-btn">오늘</button>
+                <button type="button" class="nav-btn" data-shift="1" title="1개월 이후">›</button>
+                <button type="button" class="nav-btn" data-shift="12" title="1년 이후">»</button>
+            </div>
+        </nav>
+        <div class="topbar-right">
+            <nav class="view-switch" aria-label="보기 전환">
+                <button type="button" id="calendarViewButton" data-view="calendar">달력보기</button>
+                <button type="button" id="listViewButton" class="active" data-view="list">목록보기</button>
+                <div class="team-filter-wrap">
+                    <button type="button" id="teamFilterButton" class="team-filter-btn">전체팀 ▾</button>
+                    <div class="team-filter-dropdown" id="teamFilterDropdown" hidden></div>
+                </div>
+            </nav>
+            <button type="button" id="searchButton" class="search-btn" aria-label="검색">
+                <svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="7"/><path d="m21 21-4.35-4.35"/></svg>
+                검색
+            </button>
+            <button type="button" id="changelogButton" class="help-btn" aria-label="버전 업데이트 기록" title="버전 업데이트 기록">?</button>
+        </div>
+    </header>
+
+    <div class="layout">
+        <section class="calendar-wrap" aria-label="월간 일정">
+            <div class="weekday" aria-hidden="true">
+                <div class="sun">일</div><div>월</div><div>화</div><div>수</div><div>목</div><div>금</div><div class="sat">토</div>
+            </div>
+            <div class="calendar" id="calendar"></div>
+        </section>
+
+        <section class="full-schedule" aria-label="일정 전체 보기">
+            <div id="fullSchedule"></div>
+        </section>
+    </div>
+</main>
+
+<div class="search-modal" id="searchModal" role="dialog" aria-modal="true" aria-label="일정 검색">
+    <div class="search-panel">
+        <div class="search-head">
+            <svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="7"/><path d="m21 21-4.35-4.35"/></svg>
+            <input type="search" id="searchInput" placeholder="행사명, 장소, 담당자, 팀명으로 검색…" autocomplete="off" spellcheck="false">
+            <button type="button" class="search-close" id="closeSearchModal" aria-label="닫기">×</button>
+        </div>
+        <div class="search-body" id="searchBody">
+            <div class="search-status" id="searchStatus">검색어를 입력하세요.</div>
+        </div>
+    </div>
+</div>
+
+<div class="search-modal" id="changelogModal" role="dialog" aria-modal="true" aria-label="버전 업데이트 기록">
+    <div class="search-panel">
+        <div class="search-head">
+            <strong style="flex:1;font-size:16px;">버전 업데이트 기록</strong>
+            <a href="/admin" class="admin-link" id="changelogAdminLink">관리자</a>
+            <button type="button" class="search-close" id="closeChangelogModal" aria-label="닫기">×</button>
+        </div>
+        <div class="changelog-body">
+            <?php foreach (changelog() as $entry): ?>
+                <div class="changelog-entry">
+                    <div class="changelog-ver">
+                        <strong><?= h((string) $entry['version']) ?></strong>
+                        <span><?= h((string) $entry['date']) ?></span>
+                    </div>
+                    <ul>
+                        <?php foreach ((array) $entry['changes'] as $change): ?>
+                            <li><?= h((string) $change) ?></li>
+                        <?php endforeach; ?>
+                    </ul>
+                </div>
+            <?php endforeach; ?>
+        </div>
+    </div>
+</div>
+
+<div class="modal" id="eventModal" role="dialog" aria-modal="true" aria-labelledby="eventModalTitle">
+    <div class="modal-panel">
+        <div class="modal-head">
+            <h2 class="section-title" id="eventModalTitle">일정</h2>
+            <button type="button" class="icon-button" id="closeEventModal" aria-label="닫기">×</button>
+        </div>
+        <section class="editor" aria-label="일정 입력">
+            <form id="eventForm" class="form-grid">
+                <input type="hidden" id="eventId">
+                <label>행사명
+                    <input id="title" required maxlength="120" placeholder="행사명을 입력하세요">
+                </label>
+                <label>장소
+                    <input id="place" maxlength="120" placeholder="장소">
+                </label>
+                <label>날짜
+                    <input id="date" type="date" required>
+                </label>
+                <div class="two">
+                    <label>시작
+                        <input id="start" inputmode="numeric" autocomplete="off" maxlength="5" placeholder="1100">
+                    </label>
+                    <label>끝
+                        <input id="end" inputmode="numeric" autocomplete="off" maxlength="5" placeholder="1400">
+                    </label>
+                </div>
+                <label>참석대상
+                    <div class="checks" id="targets"></div>
+                </label>
+                <label>팀
+                    <input type="hidden" id="team">
+                    <div class="team-buttons" id="teamButtons"></div>
+                </label>
+                <label>담당자
+                    <input id="manager" maxlength="60" placeholder="담당자 이름">
+                </label>
+                <div class="actions">
+                    <button type="button" id="deleteButton" class="danger">삭제</button>
+                    <div class="actions-right">
+                        <button type="button" id="cancelButton">취소</button>
+                        <button type="submit" class="primary">저장</button>
+                    </div>
+                </div>
+            </form>
+        </section>
+    </div>
+</div>
+
+<script>
+const docHash = <?= json_encode($hash, JSON_UNESCAPED_UNICODE) ?>;
+const READONLY = <?= json_encode(is_aggregate_hash($hash)) ?>;
+const targetOptions = ['교육감', '부교육감', '국장', '과장'];
+const state = {
+    current: new Date(),
+    meta: null,
+    events: [],
+    selectedEventId: '',
+    listStart: null,
+    listEnd: null,
+    listEvents: [],
+    listMonths: new Set(),
+    loadingList: false,
+    teamFilter: ''
+};
+
+const $ = (id) => document.getElementById(id);
+const pad = (n) => String(n).padStart(2, '0');
+const ym = (date) => `${date.getFullYear()}-${pad(date.getMonth() + 1)}`;
+const ymd = (date) => `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}`;
+
+function monthStart(date) {
+    return new Date(date.getFullYear(), date.getMonth(), 1);
+}
+
+
+function addDays(date, days) {
+    const next = new Date(date);
+    next.setDate(next.getDate() + days);
+    return next;
+}
+
+function monthRange(start, end) {
+    const months = [];
+    const cursor = monthStart(start);
+    const last = monthStart(end);
+    while (cursor <= last) {
+        months.push(ym(cursor));
+        cursor.setMonth(cursor.getMonth() + 1);
+    }
+    return months;
+}
+
+async function moveToMonth(date, dateForScroll = null) {
+    const target = monthStart(date);
+    state.current = target;
+    await loadEvents();
+    updatePageTitle();
+    resetForm(dateForScroll || `${ym(state.current)}-01`);
+    return true;
+}
+
+function apiUrl(api, params = {}) {
+    const url = new URL('/index.php', window.location.origin);
+    url.searchParams.set('api', api);
+    url.searchParams.set('doc', docHash);
+    for (const [key, value] of Object.entries(params)) {
+        url.searchParams.set(key, value);
+    }
+    return url.toString();
+}
+
+async function request(api, params = {}, options = {}) {
+    const response = await fetch(apiUrl(api, params), {
+        headers: {'Content-Type': 'application/json'},
+        ...options
+    });
+    if (!response.ok) {
+        const message = await response.text();
+        throw new Error(message || '요청을 처리하지 못했습니다.');
+    }
+    return response.json();
+}
+
+function downloadText(filename, text, type = 'text/plain;charset=utf-8') {
+    const blob = new Blob([text], {type});
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = filename;
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    URL.revokeObjectURL(url);
+}
+
+function renderTargets() {
+    $('targets').innerHTML = targetOptions.map((target) => `
+        <button type="button" class="target-button ${targetClass(target)}" data-target="${target}">${target}</button>
+    `).join('');
+}
+
+function selectedTargets() {
+    return [...document.querySelectorAll('.target-button.active')].map((button) => button.dataset.target);
+}
+
+function updateTargetButtons(targets = selectedTargets()) {
+    document.querySelectorAll('.target-button').forEach((button) => {
+        const active = targets.includes(button.dataset.target);
+        button.classList.toggle('active', active);
+        button.setAttribute('aria-pressed', active ? 'true' : 'false');
+    });
+}
+
+function toggleTarget(target) {
+    const targets = selectedTargets();
+    const nextTargets = targets.includes(target)
+        ? targets.filter((item) => item !== target)
+        : [...targets, target];
+    updateTargetButtons(nextTargets);
+}
+
+function renderTeams() {
+    const teams = (state.meta?.teams?.length ? state.meta.teams : ['미지정']).slice(0, 4);
+    $('teamButtons').innerHTML = teams.map((team, index) => `
+        <button type="button" class="team-button team-color-${index + 1}" data-team="${escapeHtml(team)}">${escapeHtml(team)}</button>
+    `).join('');
+    updateTeamButtons();
+    renderTeamFilterDropdown();
+}
+
+function renderTeamFilterDropdown() {
+    const teams = (state.meta?.teams?.length ? state.meta.teams : []).slice(0, 4);
+    const dropdown = $('teamFilterDropdown');
+    dropdown.innerHTML = [
+        `<button type="button" class="team-filter-option${state.teamFilter === '' ? ' active' : ''}" data-filter="">전체팀</button>`,
+        ...teams.map((team) => `<button type="button" class="team-filter-option${state.teamFilter === team ? ' active' : ''}" data-filter="${escapeHtml(team)}">${escapeHtml(team)}</button>`)
+    ].join('');
+}
+
+function updateTeamFilterButton() {
+    const btn = $('teamFilterButton');
+    if (state.teamFilter) {
+        btn.textContent = state.teamFilter + ' ▾';
+        btn.classList.add('active');
+    } else {
+        btn.textContent = '전체팀 ▾';
+        btn.classList.remove('active');
+    }
+}
+
+function setTeamFilter(team) {
+    state.teamFilter = team;
+    updateTeamFilterButton();
+    renderTeamFilterDropdown();
+    renderCalendar();
+    if (document.querySelector('.app').classList.contains('full-view')) {
+        renderFullSchedule();
+    }
+}
+
+function updateTeamButtons() {
+    const selected = $('team').value;
+    document.querySelectorAll('.team-button').forEach((button) => {
+        const active = button.dataset.team === selected;
+        button.classList.toggle('active', active);
+        button.setAttribute('aria-pressed', active ? 'true' : 'false');
+    });
+}
+
+function setTeam(team) {
+    $('team').value = $('team').value === team ? '' : team;
+    updateTeamButtons();
+}
+
+function teamColorClass(team) {
+    const teams = state.meta?.teams || [];
+    const index = teams.findIndex((item) => item === team);
+    return index >= 0 && index < 4 ? `team-color-${index + 1}` : '';
+}
+
+function targetClass(target) {
+    return {
+        '교육감': 'target-education-chief',
+        '부교육감': 'target-deputy-chief',
+        '국장': 'target-director',
+        '과장': 'target-manager'
+    }[target] || '';
+}
+
+function renderTargetsBadges(targets) {
+    if (!Array.isArray(targets) || !targets.length) return '';
+    return `
+        <div class="target-badges">
+            ${targets.map((target) => `
+                <span class="target-badge ${targetClass(target)}">${escapeHtml(target)}</span>
+            `).join('')}
+        </div>
+    `;
+}
+
+function escapeHtml(value) {
+    return String(value).replace(/[&<>"']/g, (char) => ({
+        '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#039;'
+    }[char]));
+}
+
+function monthDates(date) {
+    const first = new Date(date.getFullYear(), date.getMonth(), 1);
+    const start = new Date(first);
+    start.setDate(first.getDate() - first.getDay());
+    return Array.from({length: 42}, (_, index) => {
+        const item = new Date(start);
+        item.setDate(start.getDate() + index);
+        return item;
+    });
+}
+
+function eventTime(event) {
+    if (event.start && event.end) return `${event.start}-${event.end}`;
+    if (event.start) return event.start;
+    if (event.end) return `~${event.end}`;
+    return '시간 미정';
+}
+
+function normalizeTimeInput(value) {
+    const raw = String(value || '').trim();
+    if (!raw) return '';
+
+    const compact = raw.replace(/[^\d]/g, '');
+    let hour = '';
+    let minute = '00';
+
+    if (/^\d{1,2}$/.test(compact)) {
+        hour = compact;
+    } else if (/^\d{3}$/.test(compact)) {
+        hour = compact.slice(0, 1);
+        minute = compact.slice(1);
+    } else if (/^\d{4}$/.test(compact)) {
+        hour = compact.slice(0, 2);
+        minute = compact.slice(2);
+    } else {
+        return '';
+    }
+
+    const h = Number(hour);
+    const m = Number(minute);
+    if (!Number.isInteger(h) || !Number.isInteger(m) || h < 0 || h > 23 || m < 0 || m > 59) {
+        return '';
+    }
+
+    return `${pad(h)}:${pad(m)}`;
+}
+
+function bindTimeInput(id) {
+    const input = $(id);
+    input.addEventListener('input', () => {
+        const digits = input.value.replace(/[^\d]/g, '').slice(0, 4);
+        input.value = digits;
+    });
+    input.addEventListener('blur', () => {
+        input.value = normalizeTimeInput(input.value);
+    });
+}
+
+function timeSortKey(event) {
+    return [event.start || '99:99', event.end || '99:99', event.title || ''].join('|');
+}
+
+function targetPriority(event) {
+    const targets = Array.isArray(event.targets) ? event.targets : [];
+    const priority = ['교육감', '부교육감', '국장', '과장'];
+    const index = priority.findIndex((target) => targets.includes(target));
+    return index === -1 ? priority.length : index;
+}
+
+function sortByTime(a, b) {
+    return timeSortKey(a).localeCompare(timeSortKey(b));
+}
+
+function sortByTargetPriority(a, b) {
+    return targetPriority(a) - targetPriority(b) || sortByTime(a, b);
+}
+
+function renderCalendar() {
+    if (!document.querySelector('.app').classList.contains('full-view')) {
+        updateCurrentYearMonth();
+    }
+    const today = ymd(new Date());
+    const filteredEvents = state.teamFilter
+        ? state.events.filter((e) => e.team === state.teamFilter)
+        : state.events;
+    const byDate = filteredEvents.reduce((acc, event) => {
+        (acc[event.date] ||= []).push(event);
+        return acc;
+    }, {});
+
+    $('calendar').innerHTML = monthDates(state.current).map((date) => {
+        const dateText = ymd(date);
+        const events = (byDate[dateText] || []).sort(sortByTime);
+        const classes = [
+            'day',
+            date.getDay() === 0 ? 'weekend-sun' : '',
+            date.getDay() === 6 ? 'weekend-sat' : '',
+            date.getMonth() === state.current.getMonth() ? '' : 'other',
+            dateText === today ? 'today' : ''
+        ].filter(Boolean).join(' ');
+
+        return `
+            <div class="${classes}" data-date="${dateText}">
+                <div class="day-head">
+                    <span>${date.getDate()}</span>
+                    ${READONLY ? '' : `<button type="button" class="add-day" data-add="${dateText}" title="일정 추가">+</button>`}
+                </div>
+                ${events.length ? events.map(renderEvent).join('') : '<div class="empty">일정 없음</div>'}
+            </div>
+        `;
+    }).join('');
+    renderFullSchedule();
+}
+
+function renderFullSchedule() {
+    const weekdays = ['일', '월', '화', '수', '목', '금', '토'];
+    const start = state.listStart || addDays(new Date(), -7);
+    const end = state.listEnd || addDays(new Date(), 14);
+    const today = ymd(new Date());
+    const filteredListEvents = state.teamFilter
+        ? state.listEvents.filter((e) => e.team === state.teamFilter)
+        : state.listEvents;
+    const byDate = filteredListEvents.reduce((acc, event) => {
+        (acc[event.date] ||= []).push(event);
+        return acc;
+    }, {});
+    const rows = [];
+
+    for (let date = new Date(start); date <= end; date = addDays(date, 1)) {
+        const dateText = ymd(date);
+        const events = (byDate[dateText] || []).sort(sortByTargetPriority);
+        const weekendClass = date.getDay() === 0 ? 'weekend-sun' : (date.getDay() === 6 ? 'weekend-sat' : '');
+        const todayClass = dateText === today ? 'today' : '';
+
+        rows.push(`
+            <div class="schedule-row ${weekendClass} ${todayClass}" data-date="${dateText}">
+                <div class="schedule-date">
+                    <span>
+                        ${dateText.slice(5)}
+                        <small>${weekdays[date.getDay()]}요일</small>
+                    </span>
+                    ${READONLY ? '' : `<button type="button" class="add-schedule" data-add="${dateText}" title="일정 추가">+</button>`}
+                </div>
+                <div class="schedule-items">
+                    ${events.length ? events.map(renderEvent).join('') : '<div class="empty">일정 없음</div>'}
+                </div>
+            </div>
+        `);
+    }
+
+    $('fullSchedule').innerHTML = rows.join('');
+    requestAnimationFrame(syncYearMonthFromScroll);
+}
+
+function mergeListEvents(events) {
+    const rows = new Map(state.listEvents.map((event) => [event.id, event]));
+    events.forEach((event) => rows.set(event.id, event));
+    state.listEvents = [...rows.values()].sort((a, b) => [a.date || '', timeSortKey(a)].join('|').localeCompare([b.date || '', timeSortKey(b)].join('|')));
+}
+
+async function loadListRange(start, end) {
+    const months = monthRange(start, end).filter((month) => !state.listMonths.has(month));
+    if (!months.length) {
+        renderFullSchedule();
+        return;
+    }
+
+    const monthEvents = await Promise.all(months.map((month) => request('events', {month})));
+    months.forEach((month) => state.listMonths.add(month));
+    monthEvents.forEach(mergeListEvents);
+    renderFullSchedule();
+}
+
+async function initListRange() {
+    const today = new Date();
+    state.listStart = addDays(today, -7);
+    state.listEnd = addDays(today, 14);
+    state.listEvents = [];
+    state.listMonths = new Set();
+    await loadListRange(state.listStart, state.listEnd);
+}
+
+async function extendList(direction) {
+    if (state.loadingList || !document.querySelector('.app').classList.contains('full-view')) return;
+    state.loadingList = true;
+    try {
+        if (direction === 'up') {
+            const oldStart = state.listStart;
+            state.listStart = addDays(state.listStart, -14);
+            const prevHeight = document.documentElement.scrollHeight;
+            const prevScrollY = window.scrollY;
+            await loadListRange(state.listStart, oldStart);
+            const added = document.documentElement.scrollHeight - prevHeight;
+            if (added > 0) window.scrollTo({top: prevScrollY + added, behavior: 'instant'});
+        } else {
+            const oldEnd = state.listEnd;
+            state.listEnd = addDays(state.listEnd, 14);
+            await loadListRange(oldEnd, state.listEnd);
+        }
+    } finally {
+        state.loadingList = false;
+    }
+}
+
+function scrollDateIntoView(dateText = ymd(new Date())) {
+    const fullView = document.querySelector('.app').classList.contains('full-view');
+    const selector = fullView
+        ? `.schedule-row[data-date="${dateText}"]`
+        : `.day[data-date="${dateText}"]`;
+    const target = document.querySelector(selector);
+    if (target) {
+        target.scrollIntoView({block: 'center', inline: 'nearest'});
+    }
+}
+
+function updatePageTitle() {
+    $('pageTitle').textContent = state.meta?.title || '부서 일정표';
+}
+
+function updateCurrentYearMonth(dateStr) {
+    const el = $('currentYearMonth');
+    if (!el) return;
+    let year, month;
+    if (dateStr) {
+        [year, month] = dateStr.split('-').map(Number);
+    } else {
+        year = state.current.getFullYear();
+        month = state.current.getMonth() + 1;
+    }
+    el.textContent = `(${year}년 ${month}월)`;
+}
+
+function syncYearMonthFromScroll() {
+    const rows = document.querySelectorAll('#fullSchedule .schedule-row[data-date]');
+    const cutoff = (document.querySelector('.topbar')?.offsetHeight || 60) + 4;
+    for (const row of rows) {
+        if (row.getBoundingClientRect().bottom > cutoff) {
+            updateCurrentYearMonth(row.dataset.date);
+            return;
+        }
+    }
+}
+
+function updateViewButtons() {
+    const fullView = document.querySelector('.app').classList.contains('full-view');
+    $('calendarViewButton').classList.toggle('active', !fullView);
+    $('listViewButton').classList.toggle('active', fullView);
+    $('calendarViewButton').setAttribute('aria-pressed', fullView ? 'false' : 'true');
+    $('listViewButton').setAttribute('aria-pressed', fullView ? 'true' : 'false');
+    updatePageTitle();
+}
+
+function setFullView(enabled, dateText = null) {
+    document.querySelector('.app').classList.toggle('full-view', enabled);
+    try { localStorage.setItem('cal:viewMode', enabled ? 'list' : 'calendar'); } catch (e) {}
+    updateViewButtons();
+    if (!enabled) {
+        updateCurrentYearMonth();
+    }
+    requestAnimationFrame(() => {
+        scrollDateIntoView(dateText || ymd(new Date()));
+        if (enabled) syncYearMonthFromScroll();
+    });
+}
+
+async function showListView() {
+    if (!state.listStart || !state.listEnd) {
+        await initListRange();
+    }
+    setFullView(true, ymd(new Date()));
+}
+
+function selectEvent(id) {
+    state.selectedEventId = id || '';
+    document.querySelectorAll('[data-event]').forEach((item) => {
+        item.classList.toggle('selected', item.dataset.event === state.selectedEventId);
+    });
+}
+
+async function moveListToDate(date) {
+    state.current = monthStart(date);
+    await loadEvents();
+    updatePageTitle();
+    state.listStart = addDays(date, -7);
+    state.listEnd = addDays(date, 14);
+    state.listEvents = [];
+    state.listMonths = new Set();
+    await loadListRange(state.listStart, state.listEnd);
+    requestAnimationFrame(() => {
+        scrollDateIntoView(ymd(date));
+        syncYearMonthFromScroll();
+    });
+}
+
+async function goToday() {
+    const today = new Date();
+    if (document.querySelector('.app').classList.contains('full-view')) {
+        await moveListToDate(today);
+        return;
+    }
+    if (await moveToMonth(today, ymd(today))) {
+        requestAnimationFrame(() => scrollDateIntoView(ymd(today)));
+    }
+}
+
+function placeIconType(place) {
+    const value = String(place || '');
+    const rules = [
+        ['meeting', ['회의실', '협의회실', '세미나실', '강당', '소회의실', '대회의실']],
+        ['hotel', ['호텔', '리조트', '콘도']],
+        ['welfare', ['복지관', '복지센터']],
+        ['learning', ['장애인배움터', '배움터', '평생학습관', '교육원']],
+        ['middle-school', ['중학교']],
+        ['info', ['정보원', '연구정보원', '미래교육원']],
+        ['culture', ['문화원', '문화회관', '문화센터']],
+        ['school', ['학교', '초등학교', '고등학교', '특수학교', '유치원', '학원']],
+    ];
+    const found = rules.find(([, keywords]) => keywords.some((keyword) => value.includes(keyword)));
+    return found ? found[0] : 'place';
+}
+
+function placeIconSvg(type) {
+    const icons = {
+        school: '<svg viewBox="0 0 24 24"><path d="M3 21h18"/><path d="M5 21V9l7-4 7 4v12"/><path d="M9 21v-6h6v6"/><path d="M9 10h.01"/><path d="M15 10h.01"/></svg>',
+        meeting: '<svg viewBox="0 0 24 24"><path d="M4 5h16v10H4z"/><path d="M8 19h8"/><path d="M12 15v4"/><path d="M8 9h8"/><path d="M8 12h5"/></svg>',
+        hotel: '<svg viewBox="0 0 24 24"><path d="M4 21V5a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v16"/><path d="M17 9h3v12"/><path d="M8 7h2"/><path d="M13 7h1"/><path d="M8 11h2"/><path d="M13 11h1"/><path d="M9 21v-5h4v5"/></svg>',
+        welfare: '<svg viewBox="0 0 24 24"><path d="M12 21s-7-4.4-9-9a4.5 4.5 0 0 1 8-4A4.5 4.5 0 0 1 19 8c1.2 1.4 1.2 3.6 0 5.2"/><path d="M16 19h5"/><path d="M18.5 16.5v5"/></svg>',
+        learning: '<svg viewBox="0 0 24 24"><path d="M4 5.5A2.5 2.5 0 0 1 6.5 3H20v17H6.5A2.5 2.5 0 0 0 4 22z"/><path d="M4 5.5v16"/><path d="M8 7h8"/><path d="M8 11h6"/></svg>',
+        'middle-school': '<svg viewBox="0 0 24 24"><path d="M2 10l10-6 10 6-10 6z"/><path d="M6 12v5c2 2 10 2 12 0v-5"/><path d="M22 10v6"/></svg>',
+        info: '<svg viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="12" rx="2"/><path d="M8 20h8"/><path d="M12 16v4"/><path d="M8 8h8"/><path d="M8 11h5"/></svg>',
+        culture: '<svg viewBox="0 0 24 24"><path d="M3 21h18"/><path d="M4 8h16"/><path d="M12 3l8 5H4z"/><path d="M6 8v13"/><path d="M10 8v13"/><path d="M14 8v13"/><path d="M18 8v13"/></svg>',
+        place: '<svg viewBox="0 0 24 24"><path d="M20 10c0 5-8 11-8 11S4 15 4 10a8 8 0 1 1 16 0z"/><circle cx="12" cy="10" r="2.5"/></svg>',
+    };
+    return icons[type] || icons.place;
+}
+
+function deptHue(name) {
+    let h = 0;
+    for (const ch of String(name)) {
+        h = (h * 31 + ch.charCodeAt(0)) % 360;
+    }
+    return h;
+}
+
+function renderEvent(event) {
+    const selectedClass = event.id === state.selectedEventId ? 'selected' : '';
+    const place = String(event.place || '');
+    const iconType = placeIconType(place);
+
+    // 간부일정(집계): 부서별 색 + 부서명 표시
+    let colorClass, style = '', owner;
+    if (event.dept) {
+        const hue = deptHue(event.dept);
+        style = ` style="border-left-color:hsl(${hue} 55% 45%);background:hsl(${hue} 70% 97%);border-color:hsl(${hue} 45% 85%)"`;
+        colorClass = 'dept-colored';
+        owner = [event.dept, event.manager].filter(Boolean).join(' · ');
+    } else {
+        colorClass = event.team ? teamColorClass(event.team) : 'external-priority';
+        owner = [event.team || '타 부서 일정', event.manager || '담당자 미정'].filter(Boolean).join(':');
+    }
+
+    return `
+        <article class="event ${colorClass} ${selectedClass}"${style} data-event="${escapeHtml(event.id)}" tabindex="0">
+            <div class="event-time">${escapeHtml(eventTime(event))}</div>
+            <div class="event-title">${escapeHtml(event.title || '(행사명 없음)')}</div>
+            ${place ? `<div class="event-place"><span class="place-icon place-icon-${iconType}" aria-hidden="true">${placeIconSvg(iconType)}</span><span>${escapeHtml(place)}</span></div>` : ''}
+            ${renderTargetsBadges(event.targets)}
+            <div class="event-meta">${escapeHtml(owner)}</div>
+        </article>
+    `;
+}
+
+function openEventModal() {
+    $('eventModal').classList.add('open');
+    requestAnimationFrame(() => $('title').focus());
+}
+
+function closeEventModal() {
+    $('eventModal').classList.remove('open');
+}
+
+function resetForm(date = ymd(new Date(state.current.getFullYear(), state.current.getMonth(), 1))) {
+    selectEvent('');
+    $('eventId').value = '';
+    $('title').value = '';
+    $('place').value = '';
+    $('date').value = date;
+    $('start').value = '';
+    $('end').value = '';
+    let lastTeam = '', lastManager = '';
+    try {
+        lastTeam = localStorage.getItem('cal:lastTeam') || '';
+        lastManager = localStorage.getItem('cal:lastManager') || '';
+    } catch (e) {}
+    // 저장된 팀이 현재 달력의 팀 목록에 있을 때만 기본값으로 사용
+    const teams = state.meta?.teams || [];
+    $('team').value = teams.includes(lastTeam) ? lastTeam : '';
+    updateTeamButtons();
+    $('manager').value = lastManager;
+    updateTargetButtons([]);
+    $('deleteButton').disabled = true;
+    $('deleteButton').hidden = true;
+    $('eventModalTitle').textContent = '일정 추가';
+}
+
+function fillForm(event) {
+    $('eventId').value = event.id || '';
+    $('title').value = event.title || '';
+    $('place').value = event.place || '';
+    $('date').value = event.date || '';
+    $('start').value = event.start || '';
+    $('end').value = event.end || '';
+    $('team').value = event.team || '';
+    updateTeamButtons();
+    $('manager').value = event.manager || '';
+    updateTargetButtons(Array.isArray(event.targets) ? event.targets : []);
+    $('deleteButton').disabled = false;
+    $('deleteButton').hidden = false;
+    $('eventModalTitle').textContent = '일정 수정';
+}
+
+function formEvent() {
+    $('start').value = normalizeTimeInput($('start').value);
+    $('end').value = normalizeTimeInput($('end').value);
+
+    return {
+        id: $('eventId').value,
+        title: $('title').value.trim(),
+        place: $('place').value.trim(),
+        date: $('date').value,
+        start: $('start').value,
+        end: $('end').value,
+        targets: selectedTargets(),
+        team: $('team').value,
+        manager: $('manager').value.trim()
+    };
+}
+
+async function loadMeta() {
+    state.meta = await request('meta');
+    updatePageTitle();
+    renderTeams();
+    updateLogoDisplay();
+}
+
+async function loadEvents() {
+    state.events = await request('events', {month: ym(state.current)});
+    renderCalendar();
+}
+
+async function reloadListIfVisible() {
+    if (!document.querySelector('.app').classList.contains('full-view') || !state.listStart || !state.listEnd) {
+        return;
+    }
+    const start = state.listStart;
+    const end = state.listEnd;
+    state.listEvents = [];
+    state.listMonths = new Set();
+    await loadListRange(start, end);
+}
+
+async function reload() {
+    await loadMeta();
+    await loadEvents();
+    if (document.querySelector('.app').classList.contains('full-view')) {
+        await initListRange();
+    }
+    resetForm(`${ym(state.current)}-01`);
+    updateViewButtons();
+    requestAnimationFrame(() => scrollDateIntoView());
+}
+
+$('teamFilterButton').addEventListener('click', (event) => {
+    event.stopPropagation();
+    const dd = $('teamFilterDropdown');
+    dd.hidden = !dd.hidden;
+});
+
+$('teamFilterDropdown').addEventListener('click', (event) => {
+    const opt = event.target.closest('[data-filter]');
+    if (!opt) return;
+    $('teamFilterDropdown').hidden = true;
+    setTeamFilter(opt.dataset.filter);
+});
+
+document.addEventListener('click', (event) => {
+    if (!event.target.closest('.team-filter-wrap')) {
+        $('teamFilterDropdown').hidden = true;
+    }
+});
+
+document.addEventListener('click', async (event) => {
+    const viewButton = event.target.closest('[data-view]');
+    if (viewButton) {
+        if (viewButton.dataset.view === 'list') {
+            await showListView();
+        } else {
+            setFullView(false);
+        }
+        return;
+    }
+
+    const teamButton = event.target.closest('[data-team]');
+    if (teamButton) {
+        setTeam(teamButton.dataset.team || '');
+        return;
+    }
+
+    const targetButton = event.target.closest('[data-target]');
+    if (targetButton) {
+        toggleTarget(targetButton.dataset.target || '');
+        return;
+    }
+
+    const shift = event.target.closest('[data-shift]');
+    if (shift) {
+        const next = new Date(state.current.getFullYear(), state.current.getMonth() + Number(shift.dataset.shift), 1);
+        if (document.querySelector('.app').classList.contains('full-view')) {
+            await moveListToDate(next);
+        } else {
+            await moveToMonth(next);
+        }
+        return;
+    }
+
+    const add = event.target.closest('[data-add]');
+    if (add) {
+        resetForm(add.dataset.add);
+        openEventModal();
+        return;
+    }
+
+    const item = event.target.closest('[data-event]');
+    if (item) {
+        selectEvent(item.dataset.event || '');
+    }
+});
+
+document.addEventListener('dblclick', (event) => {
+    if (READONLY) return; // 간부일정은 읽기 전용 — 편집 모달 열지 않음
+    const item = event.target.closest('[data-event]');
+    if (item) {
+        const id = item.dataset.event;
+        const found = state.events.find((row) => row.id === id)
+            || state.listEvents.find((row) => row.id === id);
+        if (found) {
+            selectEvent(found.id || '');
+            fillForm(found);
+            openEventModal();
+        }
+        return;
+    }
+
+    if (event.target.closest('button, input, select, textarea, a')) {
+        return;
+    }
+
+    const dayCell = event.target.closest('.calendar-wrap .day[data-date]');
+    if (dayCell) {
+        resetForm(dayCell.dataset.date || ymd(new Date()));
+        openEventModal();
+        return;
+    }
+
+    const scheduleRow = event.target.closest('.full-schedule .schedule-row[data-date]');
+    if (scheduleRow) {
+        resetForm(scheduleRow.dataset.date || ymd(new Date()));
+        openEventModal();
+    }
+});
+
+$('todayButton').addEventListener('click', async () => {
+    await goToday();
+});
+
+$('eventForm').addEventListener('submit', async (event) => {
+    event.preventDefault();
+    const payload = formEvent();
+    if (!payload.title || !payload.date) return;
+    // 담당자/팀 최종 입력값을 이 브라우저의 기본값으로 기억
+    try {
+        localStorage.setItem('cal:lastManager', payload.manager || '');
+        localStorage.setItem('cal:lastTeam', payload.team || '');
+    } catch (e) {}
+    await request('events', {month: ym(state.current)}, {
+        method: 'POST',
+        body: JSON.stringify(payload)
+    });
+
+    const payloadMonth = payload.date.slice(0, 7);
+    if (payloadMonth !== ym(state.current)) {
+        const [year, month] = payloadMonth.split('-').map(Number);
+        state.current = new Date(year, month - 1, 1);
+    }
+    await loadEvents();
+    await reloadListIfVisible();
+    resetForm(payload.date);
+    closeEventModal();
+});
+
+$('deleteButton').addEventListener('click', async () => {
+    const id = $('eventId').value;
+    if (!id || !confirm('이 일정을 삭제할까요?')) return;
+    await request('events', {month: ($('date').value || `${ym(state.current)}-01`).slice(0, 7), id}, {method: 'DELETE'});
+    await loadEvents();
+    await reloadListIfVisible();
+    resetForm(`${ym(state.current)}-01`);
+    closeEventModal();
+});
+
+$('closeEventModal').addEventListener('click', closeEventModal);
+$('cancelButton').addEventListener('click', closeEventModal);
+let _modalMousedownInside = false;
+$('eventModal').addEventListener('mousedown', (event) => {
+    _modalMousedownInside = !!event.target.closest('.modal-panel');
+});
+$('eventModal').addEventListener('click', (event) => {
+    if (event.target.id === 'eventModal' && !_modalMousedownInside) closeEventModal();
+});
+document.addEventListener('keydown', (event) => {
+    if (event.key === 'Escape') {
+        event.preventDefault();
+        if ($('changelogModal').classList.contains('open')) {
+            closeChangelogModal();
+            return;
+        }
+        if ($('searchModal').classList.contains('open')) {
+            closeSearchModal();
+            return;
+        }
+        closeEventModal();
+        goToday().catch((error) => {
+            console.error(error);
+            alert('오늘 날짜로 이동하지 못했습니다.');
+        });
+    }
+});
+
+window.addEventListener('scroll', () => {
+    if (!document.querySelector('.app').classList.contains('full-view')) return;
+    syncYearMonthFromScroll();
+    if (window.scrollY < 120) {
+        extendList('up').catch(console.error);
+        return;
+    }
+    const remaining = document.documentElement.scrollHeight - (window.scrollY + window.innerHeight);
+    if (remaining < 240) {
+        extendList('down').catch(console.error);
+    }
+}, {passive: true});
+
+// ── Logo ─────────────────────────────────────────────────
+function updateLogoDisplay() {
+    const hasLogo = !!(state.meta && state.meta.logoMime);
+    const img = $('logoImg');
+    const placeholder = $('logoPlaceholder');
+    const btn = $('logoButton');
+    if (hasLogo) {
+        img.src = apiUrl('logo') + '&_t=' + Date.now();
+        img.style.display = 'block';
+        placeholder.style.display = 'none';
+        btn.classList.add('has-logo');
+        btn.title = '로고 변경';
+    } else {
+        img.src = '';
+        img.style.display = 'none';
+        placeholder.style.display = '';
+        btn.classList.remove('has-logo');
+        btn.title = '로고 업로드';
+    }
+}
+
+$('logoButton').addEventListener('click', () => $('logoFileInput').click());
+
+$('logoFileInput').addEventListener('change', async (event) => {
+    const file = event.target.files[0];
+    event.target.value = '';
+    if (!file) return;
+
+    const formData = new FormData();
+    formData.append('logo', file);
+
+    try {
+        const res = await fetch(apiUrl('logo'), {method: 'POST', body: formData});
+        if (!res.ok) {
+            const data = await res.json().catch(() => ({}));
+            alert(data.error || '업로드에 실패했습니다.');
+            return;
+        }
+        const data = await res.json();
+        if (state.meta) state.meta.logoMime = data.mime;
+        updateLogoDisplay();
+    } catch {
+        alert('업로드 중 오류가 발생했습니다.');
+    }
+});
+// ─────────────────────────────────────────────────────────
+
+// ── Search ──────────────────────────────────────────────
+const WEEKDAYS = ['일', '월', '화', '수', '목', '금', '토'];
+
+function openSearchModal() {
+    $('searchModal').classList.add('open');
+    requestAnimationFrame(() => $('searchInput').focus());
+}
+
+function closeSearchModal() {
+    $('searchModal').classList.remove('open');
+    $('searchInput').value = '';
+    $('searchStatus').textContent = '검색어를 입력하세요.';
+    $('searchBody').innerHTML = '<div class="search-status" id="searchStatus">검색어를 입력하세요.</div>';
+}
+
+function highlightText(text, query) {
+    if (!query) return escapeHtml(text);
+    const escaped = escapeHtml(text);
+    const escapedQuery = query.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    return escaped.replace(new RegExp(escapedQuery, 'gi'), (m) => `<mark>${m}</mark>`);
+}
+
+function formatSearchDate(dateStr) {
+    const d = new Date(dateStr + 'T00:00:00');
+    const mm = d.getMonth() + 1;
+    const dd = d.getDate();
+    const wd = WEEKDAYS[d.getDay()];
+    return {short: `${d.getFullYear()}.${pad(mm)}.${pad(dd)}`, weekday: `${wd}요일`};
+}
+
+function renderSearchResults(events, query) {
+    const body = $('searchBody');
+    if (!events.length) {
+        body.innerHTML = `<div class="search-status" id="searchStatus">검색 결과가 없습니다.</div>`;
+        return;
+    }
+    const q = query.toLowerCase();
+    const items = events.map((event) => {
+        const {short, weekday} = formatSearchDate(event.date);
+        const metaParts = [event.dept, event.place, event.team, event.manager].filter(Boolean);
+        const metaRaw = metaParts.join(' · ');
+        return `
+            <div class="search-result-item" data-goto="${escapeHtml(event.date)}" data-event-id="${escapeHtml(event.id || '')}">
+                <div class="search-result-date">
+                    <strong>${short}</strong>${weekday}
+                </div>
+                <div>
+                    <div class="search-result-title">${highlightText(event.title || '(행사명 없음)', q)}</div>
+                    ${metaRaw ? `<div class="search-result-meta">${highlightText(metaRaw, q)}</div>` : ''}
+                </div>
+            </div>
+        `;
+    }).join('');
+    const header = `<div class="search-status" id="searchStatus">${events.length}건${events.length >= 100 ? ' (최대 100건 표시)' : ''}</div>`;
+    body.innerHTML = header + items;
+}
+
+let searchTimer = null;
+
+async function doSearch(query) {
+    const q = query.trim();
+    if (q.length < 1) {
+        $('searchBody').innerHTML = `<div class="search-status" id="searchStatus">검색어를 입력하세요.</div>`;
+        return;
+    }
+    $('searchBody').innerHTML = `<div class="search-status" id="searchStatus">검색 중…</div>`;
+    try {
+        const events = await request('search', {q});
+        renderSearchResults(events, q);
+    } catch (err) {
+        $('searchBody').innerHTML = `<div class="search-status" id="searchStatus">검색 중 오류가 발생했습니다.</div>`;
+    }
+}
+
+$('searchInput').addEventListener('input', () => {
+    clearTimeout(searchTimer);
+    searchTimer = setTimeout(() => doSearch($('searchInput').value), 280);
+});
+
+$('searchButton').addEventListener('click', openSearchModal);
+$('closeSearchModal').addEventListener('click', closeSearchModal);
+$('searchModal').addEventListener('click', (event) => {
+    if (event.target.id === 'searchModal') closeSearchModal();
+});
+
+function openChangelogModal() {
+    $('changelogModal').classList.add('open');
+}
+function closeChangelogModal() {
+    $('changelogModal').classList.remove('open');
+}
+$('changelogButton').addEventListener('click', openChangelogModal);
+$('closeChangelogModal').addEventListener('click', closeChangelogModal);
+$('changelogModal').addEventListener('click', (event) => {
+    if (event.target.id === 'changelogModal') closeChangelogModal();
+});
+
+$('searchBody').addEventListener('click', async (event) => {
+    const item = event.target.closest('[data-goto]');
+    if (!item) return;
+    const dateStr = item.dataset.goto;
+    const eventId = item.dataset.eventId || '';
+    closeSearchModal();
+    const [year, month, day] = dateStr.split('-').map(Number);
+    const target = new Date(year, month - 1, 1);
+    const fullView = document.querySelector('.app').classList.contains('full-view');
+    if (fullView) {
+        if (!state.listMonths.has(`${year}-${pad(month)}`)) {
+            const d = new Date(year, month - 1, day);
+            state.listStart = d < state.listStart ? d : state.listStart;
+            state.listEnd = d > state.listEnd ? d : state.listEnd;
+            await loadListRange(state.listStart, state.listEnd);
+        }
+        selectEvent(eventId);
+        requestAnimationFrame(() => {
+            const el = eventId ? document.querySelector(`[data-event="${eventId}"]`) : null;
+            (el || document.querySelector(`.schedule-row[data-date="${dateStr}"]`))
+                ?.scrollIntoView({block: 'center', inline: 'nearest'});
+        });
+    } else {
+        await moveToMonth(target, dateStr);
+        selectEvent(eventId);
+        requestAnimationFrame(() => {
+            const el = eventId ? document.querySelector(`[data-event="${eventId}"]`) : null;
+            (el || document.querySelector(`.day[data-date="${dateStr}"]`))
+                ?.scrollIntoView({block: 'center', inline: 'nearest'});
+        });
+    }
+    if (eventId) {
+        setTimeout(() => { if (state.selectedEventId === eventId) selectEvent(''); }, 4000);
+    }
+});
+
+document.addEventListener('keydown', (event) => {
+    if (event.key === 'k' && (event.metaKey || event.ctrlKey)) {
+        event.preventDefault();
+        openSearchModal();
+        return;
+    }
+});
+// ────────────────────────────────────────────────────────
+
+// 간부일정(읽기 전용): 편집·로고·팀필터 UI 숨김
+if (READONLY) {
+    document.querySelectorAll('.logo-btn, .team-filter-wrap').forEach((el) => { el.style.display = 'none'; });
+}
+
+bindTimeInput('start');
+bindTimeInput('end');
+renderTargets();
+// 이 브라우저에서 마지막으로 본 보기모드(달력/목록) 복원
+try {
+    const savedView = localStorage.getItem('cal:viewMode');
+    if (savedView === 'calendar') {
+        document.querySelector('.app').classList.remove('full-view');
+    } else if (savedView === 'list') {
+        document.querySelector('.app').classList.add('full-view');
+    }
+} catch (e) {}
+reload().catch((error) => {
+    console.error(error);
+    alert('일정 데이터를 불러오지 못했습니다.');
+});
+</script>
+</body>
+</html>

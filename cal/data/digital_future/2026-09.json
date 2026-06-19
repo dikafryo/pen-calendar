@@ -1,0 +1,45 @@
+[
+    {
+        "id": "b9884ae2a7b76e9e",
+        "date": "2026-09-09",
+        "start": "10:00",
+        "end": "17:00",
+        "title": "AI KOREA AI교육관 운영",
+        "place": "벡스코",
+        "targets": [
+            "교육감",
+            "국장",
+            "과장"
+        ],
+        "team": "디지털정보교육",
+        "manager": "이한희",
+        "modifiedBy": "내부",
+        "updatedAt": "2026-06-17T13:39:07+09:00"
+    },
+    {
+        "id": "e266397e5401b941",
+        "date": "2026-09-10",
+        "start": "10:00",
+        "end": "17:00",
+        "title": "AI KOREA AI교육관 운영",
+        "place": "벡스코",
+        "targets": [],
+        "team": "디지털정보교육",
+        "manager": "이한희",
+        "modifiedBy": "내부",
+        "updatedAt": "2026-06-17T13:37:47+09:00"
+    },
+    {
+        "id": "ca87bd179362ead9",
+        "date": "2026-09-11",
+        "start": "10:00",
+        "end": "16:00",
+        "title": "AI KOREA AI교육관 운영",
+        "place": "벡스코",
+        "targets": [],
+        "team": "디지털정보교육",
+        "manager": "이한희",
+        "modifiedBy": "내부",
+        "updatedAt": "2026-06-17T13:37:50+09:00"
+    }
+]

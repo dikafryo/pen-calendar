@@ -81,8 +81,70 @@ const state = {
   syncedRange: {
     google: { start: null, end: null },
     nextcloud: { start: null, end: null }
-  }
+  },
+
+  // 🆕 기관 정보 (업무용 공유 캘린더 연동)
+  orgName: '',
+  deptName: '',
+  userName: ''
 };
+
+
+// ─────────────────────────────────────────────────────────────────────
+// 기관 공유 캘린더 유틸
+// ─────────────────────────────────────────────────────────────────────
+
+/** PHP clean_hash() 동치: 영문·숫자·_·-·한글 이외 제거, 최대 80자 */
+function cleanOrgHash(name) {
+  return String(name || '').replace(/[^a-zA-Z0-9_\-가-힣]/g, '').slice(0, 80);
+}
+
+/** cal.sw4u.kr 기관 캘린더 URL */
+function orgCalUrl() {
+  const hash = cleanOrgHash(state.orgName);
+  return hash ? `https://cal.sw4u.kr/?${hash}` : 'https://cal.sw4u.kr/';
+}
+
+/** 일정을 cal.sw4u.kr에 공유 (POST) */
+async function pushToCalServer(event) {
+  if (!state.orgName) return;
+  const hash = cleanOrgHash(state.orgName);
+  if (!hash) return;
+  try {
+    const payload = {
+      id: event.id,
+      title: event.title,
+      date: event.date,
+      start: event.startTime || '',
+      end: event.endTime || '',
+      place: event.location || '',
+      team: state.deptName || '',
+      manager: state.userName || ''
+    };
+    await fetch(`https://cal.sw4u.kr/index.php?api=events&doc=${encodeURIComponent(hash)}&month=${event.date ? event.date.slice(0,7) : ''}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload)
+    });
+  } catch (err) {
+    console.warn('cal.sw4u.kr 공유 실패:', err);
+  }
+}
+
+/** 일정을 cal.sw4u.kr에서 제거 (DELETE) */
+async function removeFromCalServer(event) {
+  if (!state.orgName || !event) return;
+  const hash = cleanOrgHash(state.orgName);
+  if (!hash) return;
+  try {
+    const month = event.date ? event.date.slice(0,7) : '';
+    await fetch(`https://cal.sw4u.kr/index.php?api=events&doc=${encodeURIComponent(hash)}&month=${month}&id=${encodeURIComponent(event.id)}`, {
+      method: 'DELETE'
+    });
+  } catch (err) {
+    console.warn('cal.sw4u.kr 삭제 실패:', err);
+  }
+}
 
 
 // ─────────────────────────────────────────────────────────────────────
@@ -177,7 +239,10 @@ async function saveSettings() {
     opacity: state.opacity,
     fontSize: state.fontSize,
     theme: state.theme,                // 🆕 v26.5.9b
-    defaultTarget: state.defaultTarget // 🆕 v26.5.9f
+    defaultTarget: state.defaultTarget, // 🆕 v26.5.9f
+    orgName: state.orgName,            // 🆕 기관 정보
+    deptName: state.deptName,
+    userName: state.userName
   });
 }
 
@@ -1851,6 +1916,14 @@ function openEventModal(event, defaultDate) {
   // 🆕 캘린더 하위 드롭다운 갱신 (source가 google/nextcloud일 때만 보임)
   updateEventCalendarDropdown(event);
 
+  // 🆕 기관 공유 체크박스 (orgName 있을 때만 표시)
+  const shareRow = document.getElementById('evShareRow');
+  const shareCheck = document.getElementById('evShare');
+  if (shareRow && shareCheck) {
+    shareRow.style.display = state.orgName ? '' : 'none';
+    shareCheck.checked = event ? !!(event.shared) : false;
+  }
+
   updateAlarmChips();         // 칩 disabled/active 상태 갱신
   updateRecurrenceUiVisibility();   // 🆕 반복 종료 옵션 표시 상태 갱신
 
@@ -2694,6 +2767,28 @@ async function saveEvent() {
       toast(formRrule ? '반복 일정이 추가되었습니다' : '추가되었습니다');
     }
 
+    // 🆕 기관 공유: evShare 체크 시 cal.sw4u.kr에 푸시
+    const shareCheck = document.getElementById('evShare');
+    const wantsShare = shareCheck && shareCheck.checked && state.orgName;
+    if (wantsShare) {
+      const targetEvent = state.editingEventId
+        ? state.events.find(e => e.id === state.editingEventId)
+        : state.events[state.events.length - 1];
+      if (targetEvent) {
+        targetEvent.shared = true;
+        await pushToCalServer(targetEvent);
+      }
+    } else {
+      // 이전에 공유됐던 일정에서 체크를 해제한 경우 서버에서 제거
+      const targetEvent = state.editingEventId
+        ? state.events.find(e => e.id === state.editingEventId)
+        : null;
+      if (targetEvent && targetEvent.shared && shareCheck && !shareCheck.checked) {
+        targetEvent.shared = false;
+        await removeFromCalServer(targetEvent);
+      }
+    }
+
     // 저장 + 모달 닫기 + 다시 그리기 (saveEvents 안에서 알람 재스케줄까지 함)
     await saveEvents();
     closeEventModal();
@@ -3033,6 +3128,10 @@ async function deleteEvent() {
   //   이 케이스에서 마스터만 지우고 자식(recurrenceId)을 안 지우면 orphan 발생 →
   //   사용자가 그 자식을 다시 누르면 "마스터 일정을 찾을 수 없습니다" 오류.
   //   ctx 분기의 'all' 과 동일하게 자식까지 같이 정리.
+
+  // 🆕 공유 일정이면 cal.sw4u.kr에서도 제거
+  if (ev && ev.shared) await removeFromCalServer(ev);
+
   if (ev && ev.recurrence) {
     state.events = state.events.filter(e =>
       e.id !== state.editingEventId && e.recurrenceId !== state.editingEventId
@@ -3765,12 +3864,12 @@ document.querySelector('.calendar').addEventListener('wheel', (e) => {
 }, { passive: false });   // preventDefault 쓰려면 passive: false 필수
 
 
-// ─── 좌측 상단 📅 아이콘 → neis.me 홈 열기 ───
+// ─── 좌측 상단 📅 아이콘 → 기관 공유 캘린더(orgName 설정 시) 또는 neis.me 홈 열기 ───
 document.getElementById('brandLink').addEventListener('click', (e) => {
   e.stopPropagation();
-  // Electron이면 OS 기본 브라우저로, 아니면 새 탭으로
-  if (isElectron) window.electronAPI.openExternal('https://neis.me/cal');
-  else            window.open('https://neis.me/cal', '_blank');
+  const url = state.orgName ? orgCalUrl() : 'https://neis.me/cal';
+  if (isElectron) window.electronAPI.openExternal(url);
+  else            window.open(url, '_blank');
 });
 
 
@@ -3871,6 +3970,33 @@ document.querySelectorAll('.layout-card').forEach(card => {
 document.getElementById('settingsBtn').addEventListener('click', e => {
   e.stopPropagation();   // document 클릭 핸들러로 전파 방지 (열자마자 닫히지 않게)
   document.getElementById('settingsPanel').classList.toggle('show');
+  // 패널이 열릴 때 기관 정보 필드를 현재 state로 채움
+  const panel = document.getElementById('settingsPanel');
+  if (panel.classList.contains('show')) {
+    const orgNameEl = document.getElementById('orgName');
+    const deptNameEl = document.getElementById('deptName');
+    const userNameEl = document.getElementById('userName');
+    if (orgNameEl) orgNameEl.value = state.orgName || '';
+    if (deptNameEl) deptNameEl.value = state.deptName || '';
+    if (userNameEl) userNameEl.value = state.userName || '';
+  }
+});
+
+// 🆕 기관 정보 저장 버튼
+document.getElementById('orgInfoSaveBtn')?.addEventListener('click', async () => {
+  state.orgName  = (document.getElementById('orgName')?.value  || '').trim();
+  state.deptName = (document.getElementById('deptName')?.value || '').trim();
+  state.userName = (document.getElementById('userName')?.value || '').trim();
+  await saveSettings();
+  toast('기관 정보가 저장되었습니다');
+});
+
+// 🆕 공유 캘린더 열기 버튼
+document.getElementById('orgCalOpenBtn')?.addEventListener('click', () => {
+  if (!state.orgName) { toast('기관명을 먼저 입력하고 저장하세요'); return; }
+  const url = orgCalUrl();
+  if (isElectron) window.electronAPI.openExternal(url);
+  else            window.open(url, '_blank');
 });
 
 
