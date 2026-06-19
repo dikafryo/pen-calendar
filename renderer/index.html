@@ -106,6 +106,27 @@
        ╚══════════════════════════════════════════════════════════════════╝ -->
   <div class="settings-panel" id="settingsPanel">
 
+    <!-- 🆕 기관 정보 (업무용 공유 캘린더 연동) -->
+    <h4>🏢 기관 정보</h4>
+    <div class="settings-row">
+      <span>기관명</span>
+      <input type="text" id="orgName" placeholder="기관명" maxlength="80" style="flex:1">
+    </div>
+    <div class="settings-row">
+      <span>부서명</span>
+      <input type="text" id="deptName" placeholder="부서명" maxlength="80" style="flex:1">
+    </div>
+    <div class="settings-row">
+      <span>이름</span>
+      <input type="text" id="userName" placeholder="사용자 이름" maxlength="60" style="flex:1">
+    </div>
+    <div class="settings-row" style="gap:4px;flex-wrap:wrap">
+      <button id="orgInfoSaveBtn" style="font-size:11px;padding:3px 8px">저장</button>
+      <button id="orgCalOpenBtn" style="font-size:11px;padding:3px 8px">공유 캘린더 열기</button>
+    </div>
+
+    <div class="settings-divider"></div>
+
     <!-- ── 레이아웃 카드 3종 (🆕 v26.5.8i 균일 / 주말 압축 / 주간 일정) ── -->
     <h4>📐 레이아웃</h4>
     <div class="layout-options">
@@ -222,26 +243,6 @@
       </div>
     </div>
 
-    <div class="settings-divider"></div>
-
-    <!-- 🆕 기관 정보 (업무용 공유 캘린더 연동) -->
-    <h4>🏢 기관 정보</h4>
-    <div class="settings-row">
-      <span>기관명</span>
-      <input type="text" id="orgName" placeholder="기관명" maxlength="80" style="flex:1">
-    </div>
-    <div class="settings-row">
-      <span>부서명</span>
-      <input type="text" id="deptName" placeholder="부서명" maxlength="80" style="flex:1">
-    </div>
-    <div class="settings-row">
-      <span>이름</span>
-      <input type="text" id="userName" placeholder="사용자 이름" maxlength="60" style="flex:1">
-    </div>
-    <div class="settings-row" style="gap:4px;flex-wrap:wrap">
-      <button id="orgInfoSaveBtn" style="font-size:11px;padding:3px 8px">저장</button>
-      <button id="orgCalOpenBtn" style="font-size:11px;padding:3px 8px">공유 캘린더 열기</button>
-    </div>
 
   </div><!-- /settings-panel -->
 

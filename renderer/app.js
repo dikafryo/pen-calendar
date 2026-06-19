@@ -3982,6 +3982,21 @@ document.getElementById('settingsBtn').addEventListener('click', e => {
   }
 });
 
+// 🆕 기관 정보 텍스트 입력 — alwaysOnTop 우회 (설정 패널 안 텍스트 입력은 모달이 아니므로
+//   별도로 bypass 처리해야 키보드 입력이 들어옴. 모달과 동일한 패턴 적용.)
+['orgName', 'deptName', 'userName'].forEach(id => {
+  const el = document.getElementById(id);
+  if (!el) return;
+  el.addEventListener('focus', () => {
+    if (isElectron && window.electronAPI.modalAotBypass)
+      window.electronAPI.modalAotBypass(true).catch(() => {});
+  });
+  el.addEventListener('blur', () => {
+    if (isElectron && window.electronAPI.modalAotBypass)
+      window.electronAPI.modalAotBypass(false).catch(() => {});
+  });
+});
+
 // 🆕 기관 정보 저장 버튼
 document.getElementById('orgInfoSaveBtn')?.addEventListener('click', async () => {
   state.orgName  = (document.getElementById('orgName')?.value  || '').trim();
