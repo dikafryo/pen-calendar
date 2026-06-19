@@ -255,7 +255,7 @@ function changelog(): array
             'version' => 'v26.6.14a',
             'date' => '2026-06-14',
             'changes' => [
-                '한글 부서명 주소 지원 — cal.sw4u.kr/부서명 처럼 한글로도 접속할 수 있습니다.',
+                '한글 부서명 주소 지원 — cal2.sw4u.kr/부서명 처럼 한글로도 접속할 수 있습니다.',
                 '영문 주소(예: ?digital_future)도 기존대로 그대로 동작합니다.',
             ],
         ],

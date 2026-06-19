@@ -122,7 +122,7 @@ function applyOrgType() {
 }
 
 /**
- * orgType에 따라 cal.sw4u.kr 달력 해시 결정.
+ * orgType에 따라 cal2.sw4u.kr 달력 해시 결정.
  *   학교: 학교명만  → 전체 구성원이 하나의 달력 공유
  *   기관: 기관명_부서명 → 부서별 독립 달력 (부서명 없으면 기관명만)
  */
@@ -134,13 +134,13 @@ function buildOrgHash() {
   return dept ? `${name}_${dept}` : name;
 }
 
-/** cal.sw4u.kr 기관/학교 캘린더 URL */
+/** cal2.sw4u.kr 기관/학교 캘린더 URL */
 function orgCalUrl() {
   const hash = buildOrgHash();
-  return hash ? `https://cal.sw4u.kr/?${hash}` : 'https://cal.sw4u.kr/';
+  return hash ? `https://cal2.sw4u.kr/?${hash}` : 'https://cal2.sw4u.kr/';
 }
 
-/** 일정을 cal.sw4u.kr에 공유 (POST) */
+/** 일정을 cal2.sw4u.kr에 공유 (POST) */
 async function pushToCalServer(event) {
   if (!state.orgName) return;
   const hash = buildOrgHash();
@@ -157,28 +157,28 @@ async function pushToCalServer(event) {
       team: state.orgType === 'school' ? '' : (state.deptName || ''),
       manager: state.userName || ''
     };
-    await fetch(`https://cal.sw4u.kr/index.php?api=events&doc=${encodeURIComponent(hash)}&month=${event.date ? event.date.slice(0,7) : ''}`, {
+    await fetch(`https://cal2.sw4u.kr/index.php?api=events&doc=${encodeURIComponent(hash)}&month=${event.date ? event.date.slice(0,7) : ''}`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(payload)
     });
   } catch (err) {
-    console.warn('cal.sw4u.kr 공유 실패:', err);
+    console.warn('cal2.sw4u.kr 공유 실패:', err);
   }
 }
 
-/** 일정을 cal.sw4u.kr에서 제거 (DELETE) */
+/** 일정을 cal2.sw4u.kr에서 제거 (DELETE) */
 async function removeFromCalServer(event) {
   if (!state.orgName || !event) return;
   const hash = buildOrgHash();
   if (!hash) return;
   try {
     const month = event.date ? event.date.slice(0,7) : '';
-    await fetch(`https://cal.sw4u.kr/index.php?api=events&doc=${encodeURIComponent(hash)}&month=${month}&id=${encodeURIComponent(event.id)}`, {
+    await fetch(`https://cal2.sw4u.kr/index.php?api=events&doc=${encodeURIComponent(hash)}&month=${month}&id=${encodeURIComponent(event.id)}`, {
       method: 'DELETE'
     });
   } catch (err) {
-    console.warn('cal.sw4u.kr 삭제 실패:', err);
+    console.warn('cal2.sw4u.kr 삭제 실패:', err);
   }
 }
 
@@ -2804,7 +2804,7 @@ async function saveEvent() {
       toast(formRrule ? '반복 일정이 추가되었습니다' : '추가되었습니다');
     }
 
-    // 🆕 기관 공유: evShare 체크 시 cal.sw4u.kr에 푸시
+    // 🆕 기관 공유: evShare 체크 시 cal2.sw4u.kr에 푸시
     const shareCheck = document.getElementById('evShare');
     const wantsShare = shareCheck && shareCheck.checked && state.orgName;
     if (wantsShare) {
@@ -3166,7 +3166,7 @@ async function deleteEvent() {
   //   사용자가 그 자식을 다시 누르면 "마스터 일정을 찾을 수 없습니다" 오류.
   //   ctx 분기의 'all' 과 동일하게 자식까지 같이 정리.
 
-  // 🆕 공유 일정이면 cal.sw4u.kr에서도 제거
+  // 🆕 공유 일정이면 cal2.sw4u.kr에서도 제거
   if (ev && ev.shared) await removeFromCalServer(ev);
 
   if (ev && ev.recurrence) {
