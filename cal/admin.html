@@ -1,0 +1,465 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>일정표 관리자</title>
+<style>
+:root {
+    --bg: #f4f6f8; --panel: #fff; --line: #d9e0e7; --text: #1f2933;
+    --muted: #667085; --accent: #0f766e; --accent-s: #e0f2f1;
+    --danger: #b42318; --danger-s: #fee2e2;
+    --focus: #2563eb;
+}
+* { box-sizing: border-box; }
+body { margin:0; min-height:100vh; background:var(--bg); color:var(--text); font-family:system-ui,-apple-system,"Segoe UI",sans-serif; font-size:14px; }
+a { color:var(--accent); text-decoration:none; font-weight:700; }
+a:hover { text-decoration:underline; }
+button,input,select,textarea { font:inherit; }
+button {
+    min-height:38px; border:1px solid var(--line); border-radius:6px;
+    padding:0 14px; background:#fff; color:var(--text); cursor:pointer; font-weight:700;
+}
+button:hover { border-color:#9aa8bc; }
+button.primary { background:var(--accent); border-color:var(--accent); color:#fff; }
+button.primary:hover { opacity:.9; }
+button.danger { background:var(--danger); border-color:var(--danger); color:#fff; }
+button.danger:hover { opacity:.9; }
+button.sm { min-height:30px; padding:0 10px; font-size:12px; }
+input,select,textarea {
+    border:1px solid var(--line); border-radius:6px; min-height:38px;
+    padding:7px 10px; background:#fff; color:var(--text); width:100%;
+}
+input:focus,select:focus,textarea:focus,button:focus {
+    outline:2px solid color-mix(in srgb,var(--focus),transparent 70%); outline-offset:1px;
+}
+textarea { resize:vertical; min-height:80px; }
+label { display:grid; gap:4px; color:var(--muted); font-size:12px; font-weight:700; }
+
+/* ── Layout ── */
+.wrap { width:min(1180px,100%); margin:0 auto; padding:16px; }
+.topbar {
+    display:flex; align-items:center; justify-content:space-between;
+    gap:12px; margin-bottom:16px; flex-wrap:wrap;
+}
+h1 { margin:0; font-size:22px; font-weight:900; }
+.nav { display:flex; gap:10px; align-items:center; }
+.panel { background:var(--panel); border:1px solid var(--line); border-radius:8px; padding:16px; margin-bottom:14px; }
+
+/* ── Login ── */
+.login-wrap { display:flex; align-items:flex-start; justify-content:center; padding-top:10vh; }
+.login-box { width:min(380px,100%); }
+.login-box h1 { margin-bottom:18px; }
+.login-form { display:grid; gap:10px; }
+.error-msg { color:var(--danger); font-size:13px; font-weight:700; margin:0 0 8px; display:none; }
+.error-msg.show { display:block; }
+
+/* ── Stats ── */
+.stats { display:grid; grid-template-columns:repeat(auto-fit,minmax(140px,1fr)); gap:10px; margin-bottom:14px; }
+.stat { background:var(--panel); border:1px solid var(--line); border-radius:8px; padding:14px; }
+.stat-val { font-size:26px; font-weight:900; margin-bottom:2px; }
+.stat-lbl { color:var(--muted); font-size:12px; font-weight:700; }
+
+/* ── Create form ── */
+.create-row { display:grid; grid-template-columns:1fr 1fr 1fr auto; gap:8px; align-items:end; }
+
+/* ── Table ── */
+.table-wrap { overflow-x:auto; }
+table { width:100%; border-collapse:collapse; }
+th,td { border-bottom:1px solid var(--line); padding:10px 8px; text-align:left; vertical-align:middle; }
+th { color:var(--muted); font-size:12px; font-weight:700; white-space:nowrap; }
+.col-hash { width:18%; }
+.col-title { width:18%; }
+.col-teams { width:20%; }
+.col-cnt { width:8%; text-align:right; }
+.col-date { width:14%; }
+.col-act { width:auto; white-space:nowrap; }
+td.num { text-align:right; }
+.hash-text { font-family:monospace; font-size:13px; font-weight:700; }
+.teams-list { display:flex; flex-wrap:wrap; gap:4px; }
+.team-chip {
+    display:inline-flex; align-items:center; padding:2px 8px;
+    border:1px solid var(--line); border-radius:999px;
+    font-size:12px; font-weight:700; background:var(--accent-s); color:var(--accent);
+}
+.row-actions { display:flex; gap:6px; align-items:center; flex-wrap:wrap; }
+.muted { color:var(--muted); }
+.empty { text-align:center; padding:30px; color:var(--muted); font-weight:700; }
+
+/* ── Edit modal ── */
+.modal-bg {
+    position:fixed; inset:0; background:rgba(15,23,42,.45);
+    display:flex; align-items:center; justify-content:center;
+    padding:16px; z-index:100; display:none;
+}
+.modal-bg.show { display:flex; }
+.modal {
+    background:#fff; border:1px solid var(--line); border-radius:10px;
+    box-shadow:0 20px 60px rgba(0,0,0,.2); width:min(520px,100%);
+    max-height:90vh; overflow-y:auto; padding:20px;
+}
+.modal h2 { margin:0 0 16px; font-size:18px; }
+.modal-fields { display:grid; gap:12px; margin-bottom:16px; }
+.modal-actions { display:flex; gap:8px; justify-content:flex-end; flex-wrap:wrap; }
+.modal-actions button { min-width:80px; }
+
+/* ── CSV download panel ── */
+.csv-row { display:grid; grid-template-columns:1fr 1fr 1fr auto; gap:8px; align-items:end; }
+
+/* ── Responsive ── */
+@media (max-width:760px) {
+    .create-row,.csv-row { grid-template-columns:1fr; }
+    .col-teams,.col-date { display:none; }
+}
+</style>
+</head>
+<body>
+
+<!-- 로그인 화면 -->
+<div class="login-wrap" id="loginSection">
+    <div class="login-box panel">
+        <h1>일정표 관리자</h1>
+        <p class="error-msg" id="loginError"></p>
+        <div class="login-form">
+            <label>비밀번호
+                <input type="password" id="loginPw" placeholder="비밀번호 입력" autofocus>
+            </label>
+            <button class="primary" id="loginBtn">로그인</button>
+        </div>
+    </div>
+</div>
+
+<!-- 관리자 메인 -->
+<div id="adminSection" style="display:none">
+    <div class="wrap">
+        <div class="topbar">
+            <h1>일정표 관리자</h1>
+            <nav class="nav">
+                <a href="/">← 일정표로 이동</a>
+                <button class="sm" id="logoutBtn">로그아웃</button>
+            </nav>
+        </div>
+
+        <!-- 통계 -->
+        <div class="stats">
+            <div class="stat"><div class="stat-val" id="statDocs">-</div><div class="stat-lbl">전체 달력</div></div>
+            <div class="stat"><div class="stat-val" id="statEvents">-</div><div class="stat-lbl">전체 일정</div></div>
+            <div class="stat"><div class="stat-val" id="statMonths">-</div><div class="stat-lbl">월 데이터</div></div>
+            <div class="stat"><div class="stat-val" id="statTime">-</div><div class="stat-lbl">확인 시각</div></div>
+        </div>
+
+        <!-- 달력 만들기 -->
+        <div class="panel">
+            <h3 style="margin:0 0 12px;font-size:14px;">+ 새 달력 만들기</h3>
+            <div class="create-row">
+                <label>달력 ID (URL 키)
+                    <input id="newHash" placeholder="예: 강남구청_기획과" maxlength="80">
+                </label>
+                <label>부서/학교 이름
+                    <input id="newTitle" placeholder="예: 기획과" maxlength="80">
+                </label>
+                <label>팀 이름 (쉼표 구분)
+                    <input id="newTeams" placeholder="예: 1팀,2팀,3팀" maxlength="200">
+                </label>
+                <button class="primary" id="createBtn" style="align-self:end">만들기</button>
+            </div>
+            <p class="error-msg" id="createError" style="margin-top:8px;"></p>
+        </div>
+
+        <!-- CSV 내려받기 -->
+        <div class="panel">
+            <h3 style="margin:0 0 12px;font-size:14px;">데이터 내려받기 (CSV)</h3>
+            <div class="csv-row">
+                <label>달력 ID
+                    <input id="csvHash" placeholder="예: 강남구청_기획과">
+                </label>
+                <label>시작월
+                    <input type="month" id="csvFrom">
+                </label>
+                <label>종료월
+                    <input type="month" id="csvTo">
+                </label>
+                <button id="csvBtn" style="align-self:end">내려받기</button>
+            </div>
+        </div>
+
+        <!-- 달력 목록 -->
+        <div class="panel">
+            <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;flex-wrap:wrap;gap:8px">
+                <h3 style="margin:0;font-size:14px;">달력 목록</h3>
+                <button class="sm" id="refreshBtn">새로고침</button>
+            </div>
+            <div class="table-wrap">
+                <table>
+                    <thead>
+                        <tr>
+                            <th class="col-hash">달력 ID</th>
+                            <th class="col-title">부서/학교명</th>
+                            <th class="col-teams">팀 이름</th>
+                            <th class="col-cnt">일정</th>
+                            <th class="col-date">최근 수정</th>
+                            <th class="col-act">관리</th>
+                        </tr>
+                    </thead>
+                    <tbody id="docTableBody">
+                        <tr><td colspan="6" class="empty">불러오는 중…</td></tr>
+                    </tbody>
+                </table>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- 수정 모달 -->
+<div class="modal-bg" id="editModal">
+    <div class="modal">
+        <h2 id="editModalTitle">달력 수정</h2>
+        <div class="modal-fields">
+            <input type="hidden" id="editHash">
+            <label>달력 ID
+                <input id="editHashDisplay" disabled>
+            </label>
+            <label>부서/학교명
+                <input id="editTitle" maxlength="80" placeholder="예: 기획과">
+            </label>
+            <label>팀 이름 (한 줄에 하나씩, 최대 4개)
+                <textarea id="editTeams" rows="4" placeholder="예:&#10;1팀&#10;2팀&#10;3팀"></textarea>
+            </label>
+        </div>
+        <div class="modal-actions">
+            <button id="editCancelBtn">취소</button>
+            <button class="primary" id="editSaveBtn">저장</button>
+        </div>
+    </div>
+</div>
+
+<script>
+const ADMIN_API = (path) => '/admin?api=' + path;
+let _token = '';
+
+// ── 인증 ─────────────────────────────────────────────────────────────
+function authHeader() { return { 'Authorization': 'Bearer ' + _token, 'Content-Type': 'application/json' }; }
+
+async function apiCall(path, method = 'GET', body = null) {
+    const opts = { method, headers: authHeader() };
+    if (body !== null) opts.body = JSON.stringify(body);
+    const res = await fetch(ADMIN_API(path), opts);
+    if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        throw new Error(data.error || `HTTP ${res.status}`);
+    }
+    return res.json();
+}
+
+document.getElementById('loginBtn').addEventListener('click', tryLogin);
+document.getElementById('loginPw').addEventListener('keydown', (e) => { if (e.key === 'Enter') tryLogin(); });
+
+async function tryLogin() {
+    const pw = document.getElementById('loginPw').value;
+    const errEl = document.getElementById('loginError');
+    errEl.classList.remove('show');
+    _token = pw;
+    try {
+        await apiCall('list');
+        document.getElementById('loginSection').style.display = 'none';
+        document.getElementById('adminSection').style.display = '';
+        await loadDocs();
+    } catch {
+        _token = '';
+        errEl.textContent = '비밀번호가 맞지 않습니다.';
+        errEl.classList.add('show');
+    }
+}
+
+document.getElementById('logoutBtn').addEventListener('click', () => {
+    _token = '';
+    document.getElementById('adminSection').style.display = 'none';
+    document.getElementById('loginSection').style.display = '';
+    document.getElementById('loginPw').value = '';
+});
+
+// ── 목록 불러오기 ────────────────────────────────────────────────────
+let _docs = [];
+
+async function loadDocs() {
+    const body = document.getElementById('docTableBody');
+    body.innerHTML = '<tr><td colspan="6" class="empty">불러오는 중…</td></tr>';
+    try {
+        _docs = await apiCall('list');
+        renderStats(_docs);
+        renderTable(_docs);
+        const now = new Date();
+        document.getElementById('statTime').textContent =
+            `${now.getHours().toString().padStart(2,'0')}:${now.getMinutes().toString().padStart(2,'0')}`;
+    } catch (err) {
+        body.innerHTML = `<tr><td colspan="6" class="empty">불러오기 실패: ${esc(err.message)}</td></tr>`;
+    }
+}
+
+function renderStats(docs) {
+    const totalEvents = docs.reduce((s, d) => s + (d.eventCount || 0), 0);
+    const totalMonths = docs.reduce((s, d) => s + (d.monthCount || 0), 0);
+    document.getElementById('statDocs').textContent = docs.length;
+    document.getElementById('statEvents').textContent = totalEvents.toLocaleString();
+    document.getElementById('statMonths').textContent = totalMonths;
+}
+
+function fmtDate(iso) {
+    if (!iso) return '-';
+    const d = new Date(iso);
+    if (isNaN(d)) return iso.slice(0, 10) || '-';
+    return `${d.getFullYear()}-${pad(d.getMonth()+1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
+}
+function pad(n) { return String(n).padStart(2, '0'); }
+
+function renderTable(docs) {
+    const body = document.getElementById('docTableBody');
+    if (!docs.length) {
+        body.innerHTML = '<tr><td colspan="6" class="empty">생성된 달력이 없습니다.</td></tr>';
+        return;
+    }
+    body.innerHTML = docs.map(doc => {
+        const teams = Array.isArray(doc.teams) ? doc.teams : [];
+        const teamChips = teams.length
+            ? teams.map(t => `<span class="team-chip">${esc(t)}</span>`).join('')
+            : '<span class="muted">없음</span>';
+        const canDelete = (doc.eventCount || 0) === 0 && doc.hash !== 'boss_schedule' && doc.hash !== 'default';
+        return `<tr data-hash="${esc(doc.hash)}">
+            <td class="col-hash">
+                <div class="hash-text">${esc(doc.hash)}</div>
+                ${doc.alias ? `<div style="font-size:11px;color:var(--muted);margin-top:3px">${esc(doc.alias)}</div>` : ''}
+            </td>
+            <td class="col-title">${esc(doc.title || '-')}</td>
+            <td class="col-teams"><div class="teams-list">${teamChips}</div></td>
+            <td class="col-cnt num">${(doc.eventCount || 0).toLocaleString()}</td>
+            <td class="col-date" style="font-size:12px;color:var(--muted)">${fmtDate(doc.updatedAt)}</td>
+            <td class="col-act">
+                <div class="row-actions">
+                    <a href="/?${encodeURIComponent(doc.hash)}" target="_blank">
+                        <button class="sm">열기</button>
+                    </a>
+                    <button class="sm" data-edit="${esc(doc.hash)}">수정</button>
+                    ${canDelete ? `<button class="sm danger" data-delete="${esc(doc.hash)}">삭제</button>` : ''}
+                </div>
+            </td>
+        </tr>`;
+    }).join('');
+}
+
+document.getElementById('refreshBtn').addEventListener('click', loadDocs);
+
+// ── 달력 만들기 ──────────────────────────────────────────────────────
+document.getElementById('createBtn').addEventListener('click', async () => {
+    const hash = document.getElementById('newHash').value.trim();
+    const title = document.getElementById('newTitle').value.trim();
+    const teamsRaw = document.getElementById('newTeams').value.trim();
+    const teams = teamsRaw ? teamsRaw.split(/[,\n]+/).map(t => t.trim()).filter(Boolean) : [];
+    const errEl = document.getElementById('createError');
+    errEl.classList.remove('show');
+    if (!hash) { errEl.textContent = '달력 ID를 입력하세요.'; errEl.classList.add('show'); return; }
+    try {
+        await apiCall('create', 'POST', { hash, title, teams });
+        document.getElementById('newHash').value = '';
+        document.getElementById('newTitle').value = '';
+        document.getElementById('newTeams').value = '';
+        await loadDocs();
+    } catch (err) {
+        errEl.textContent = err.message;
+        errEl.classList.add('show');
+    }
+});
+
+// ── 수정 모달 ────────────────────────────────────────────────────────
+document.getElementById('docTableBody').addEventListener('click', async (e) => {
+    const editBtn = e.target.closest('[data-edit]');
+    if (editBtn) {
+        const hash = editBtn.dataset.edit;
+        const doc = _docs.find(d => d.hash === hash);
+        if (!doc) return;
+        document.getElementById('editHash').value = hash;
+        document.getElementById('editHashDisplay').value = hash;
+        document.getElementById('editTitle').value = doc.title || '';
+        document.getElementById('editTeams').value = (doc.teams || []).join('\n');
+        document.getElementById('editModal').classList.add('show');
+        setTimeout(() => document.getElementById('editTitle').focus(), 50);
+        return;
+    }
+    const delBtn = e.target.closest('[data-delete]');
+    if (delBtn) {
+        const hash = delBtn.dataset.delete;
+        if (!confirm(`"${hash}" 달력을 삭제하시겠습니까?\n(일정이 없는 달력만 삭제됩니다)`)) return;
+        try {
+            await apiCall(`delete&doc=${encodeURIComponent(hash)}`, 'DELETE');
+            await loadDocs();
+        } catch (err) {
+            alert('삭제 실패: ' + err.message);
+        }
+    }
+});
+
+document.getElementById('editCancelBtn').addEventListener('click', () => {
+    document.getElementById('editModal').classList.remove('show');
+});
+document.getElementById('editModal').addEventListener('click', (e) => {
+    if (e.target.id === 'editModal') document.getElementById('editModal').classList.remove('show');
+});
+
+document.getElementById('editSaveBtn').addEventListener('click', async () => {
+    const hash = document.getElementById('editHash').value;
+    const title = document.getElementById('editTitle').value.trim();
+    const teamsRaw = document.getElementById('editTeams').value;
+    const teams = teamsRaw.split(/\n/).map(t => t.trim()).filter(Boolean).slice(0, 4);
+    try {
+        await apiCall(`update&doc=${encodeURIComponent(hash)}`, 'POST', { title, teams });
+        document.getElementById('editModal').classList.remove('show');
+        await loadDocs();
+    } catch (err) {
+        alert('저장 실패: ' + err.message);
+    }
+});
+
+// ── CSV 내려받기 ─────────────────────────────────────────────────────
+const now = new Date();
+const thisMonth = `${now.getFullYear()}-${pad(now.getMonth()+1)}`;
+document.getElementById('csvFrom').value = thisMonth;
+document.getElementById('csvTo').value = thisMonth;
+
+document.getElementById('csvBtn').addEventListener('click', () => {
+    const hash = document.getElementById('csvHash').value.trim();
+    const from = document.getElementById('csvFrom').value;
+    const to = document.getElementById('csvTo').value;
+    if (!hash) { alert('달력 ID를 입력하세요.'); return; }
+    // 기존 PHP 폼 기반 CSV 다운로드 활용
+    const form = document.createElement('form');
+    form.method = 'POST';
+    form.action = '/admin';
+    [['action','download_csv'],['doc_hash',hash],['from_month',from],['to_month',to]].forEach(([n,v]) => {
+        const inp = document.createElement('input');
+        inp.type = 'hidden'; inp.name = n; inp.value = v;
+        form.appendChild(inp);
+    });
+    // PHP 세션 로그인 없이는 CSV가 안 되므로 먼저 세션 로그인
+    fetch('/admin', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/x-www-form-urlencoded'},
+        body: 'password=' + encodeURIComponent(_token),
+        credentials: 'include'
+    }).then(() => {
+        document.body.appendChild(form);
+        form.submit();
+        form.remove();
+    });
+});
+
+// ── 유틸 ──────────────────────────────────────────────────────────────
+function esc(s) {
+    return String(s ?? '').replace(/[&<>"']/g, c =>
+        ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+}
+
+document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape') document.getElementById('editModal').classList.remove('show');
+});
+</script>
+</body>
+</html>

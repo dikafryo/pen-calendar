@@ -174,8 +174,96 @@ function admin_download_csv(string $hash, string $fromMonth, string $toMonth): n
     exit;
 }
 
+// ── admin.html 전용 JSON API ─────────────────────────────────────────
+// Authorization: Bearer <password> 헤더로 인증. 세션 불필요.
+
+function admin_check_auth(): void
+{
+    $auth = (string) ($_SERVER['HTTP_AUTHORIZATION'] ?? '');
+    $token = str_starts_with($auth, 'Bearer ') ? substr($auth, 7) : '';
+    if (!hash_equals(ADMIN_PASSWORD, $token)) {
+        json_response(['error' => '인증이 필요합니다.'], 401);
+    }
+}
+
+function handle_admin_api(): void
+{
+    $act = (string) ($_GET['api'] ?? '');
+    if ($act === '') return;
+
+    header('Access-Control-Allow-Origin: *');
+    header('Access-Control-Allow-Headers: Authorization, Content-Type');
+    if ($_SERVER['REQUEST_METHOD'] === 'OPTIONS') { http_response_code(204); exit; }
+
+    admin_check_auth();
+
+    switch ($act) {
+        case 'list':
+            json_response(admin_documents());
+
+        case 'create':
+            $body = read_input();
+            $hash = clean_hash((string) ($body['hash'] ?? ''));
+            if ($hash === '') json_response(['error' => '달력 URL이 필요합니다.'], 400);
+            if (is_aggregate_hash($hash)) json_response(['error' => '예약된 해시입니다.'], 400);
+            ensure_admin_document($hash);
+            $title = (string) ($body['title'] ?? '');
+            $teams = is_array($body['teams'] ?? null) ? implode("\n", $body['teams']) : (string) ($body['teams'] ?? '');
+            if (trim($title) !== '' || trim($teams) !== '') {
+                save_admin_meta($hash, $title, $teams);
+            }
+            json_response(['ok' => true, 'hash' => $hash]);
+
+        case 'update':
+            $hash = clean_hash((string) ($_GET['doc'] ?? ''));
+            if ($hash === '') json_response(['error' => '달력 URL이 필요합니다.'], 400);
+            if (is_aggregate_hash($hash)) json_response(['error' => '간부일정은 수정할 수 없습니다.'], 403);
+            $body = read_input();
+            $title = (string) ($body['title'] ?? '');
+            $teams = is_array($body['teams'] ?? null) ? implode("\n", $body['teams']) : (string) ($body['teams'] ?? '');
+            ensure_admin_document($hash);
+            save_admin_meta($hash, $title, $teams);
+            json_response(['ok' => true]);
+
+        case 'delete':
+            $hash = clean_hash((string) ($_GET['doc'] ?? ''));
+            if ($hash === '') json_response(['error' => '달력 URL이 필요합니다.'], 400);
+            if (is_aggregate_hash($hash)) json_response(['error' => '간부일정은 삭제할 수 없습니다.'], 403);
+            $dir = DATA_DIR . '/' . $hash;
+            $eventCount = 0;
+            foreach (glob($dir . '/????-??.json') ?: [] as $f) {
+                $ev = read_json_file($f, []);
+                if (is_array($ev)) $eventCount += count($ev);
+            }
+            if ($eventCount > 0) json_response(['error' => '일정이 있는 달력은 삭제할 수 없습니다.'], 400);
+            admin_delete_doc($hash);
+            json_response(['ok' => true]);
+
+        case 'page':
+            // admin.html 서비스 (admin 경로 페이지 요청 시)
+            header('Content-Type: text/html; charset=utf-8');
+            readfile(__DIR__ . '/admin.html');
+            exit;
+
+        default:
+            json_response(['error' => '알 수 없는 API입니다.'], 404);
+    }
+}
+
 function render_admin_page(?string $error = null): never
 {
+    // JSON API 요청이면 admin.html 프론트엔드를 위한 API로 처리
+    if (isset($_GET['api'])) {
+        handle_admin_api();
+    }
+
+    // 페이지 요청(api 없음)이면 admin.html 직접 서비스
+    if ($_SERVER['REQUEST_METHOD'] === 'GET' && !isset($_POST['password']) && !isset($_GET['logout'])) {
+        header('Content-Type: text/html; charset=utf-8');
+        readfile(__DIR__ . '/admin.html');
+        exit;
+    }
+
     if (session_status() !== PHP_SESSION_ACTIVE) {
         session_start();
     }
