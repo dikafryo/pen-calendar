@@ -107,12 +107,18 @@
   <div class="settings-panel" id="settingsPanel">
 
     <!-- 🆕 기관 정보 (업무용 공유 캘린더 연동) -->
-    <h4>🏢 기관 정보</h4>
+    <h4 style="display:flex;align-items:center;justify-content:space-between;margin-bottom:6px">
+      <span>🏢 기관 정보</span>
+      <span style="display:inline-flex;border:1px solid var(--border-color,#ccc);border-radius:5px;overflow:hidden;flex-shrink:0">
+        <button id="orgTypeOrg" data-orgtype="org" style="font-size:11px;padding:2px 8px;border:none;border-radius:0;background:#3a7bd5;color:#fff;font-weight:700;cursor:pointer">기관</button>
+        <button id="orgTypeSchool" data-orgtype="school" style="font-size:11px;padding:2px 8px;border:none;border-radius:0;background:transparent;color:inherit;font-weight:700;cursor:pointer">학교</button>
+      </span>
+    </h4>
     <div class="settings-row">
-      <span>기관명</span>
+      <span id="orgNameLabel">기관명</span>
       <input type="text" id="orgName" placeholder="기관명" maxlength="80" style="flex:1">
     </div>
-    <div class="settings-row">
+    <div class="settings-row" id="deptNameRow">
       <span>부서명</span>
       <input type="text" id="deptName" placeholder="부서명" maxlength="80" style="flex:1">
     </div>

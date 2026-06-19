@@ -84,6 +84,7 @@ const state = {
   },
 
   // 🆕 기관 정보 (업무용 공유 캘린더 연동)
+  orgType: 'org',   // 'org' | 'school'
   orgName: '',
   deptName: '',
   userName: ''
@@ -97,6 +98,27 @@ const state = {
 /** PHP clean_hash() 동치: 영문·숫자·_·-·한글 이외 제거, 최대 80자 */
 function cleanOrgHash(name) {
   return String(name || '').replace(/[^a-zA-Z0-9_\-가-힣]/g, '').slice(0, 80);
+}
+
+/** 기관/학교 타입에 따라 설정 패널 UI 갱신 */
+function applyOrgType() {
+  const isSchool = state.orgType === 'school';
+  const label = document.getElementById('orgNameLabel');
+  const deptRow = document.getElementById('deptNameRow');
+  const orgNameInput = document.getElementById('orgName');
+  const btnOrg = document.getElementById('orgTypeOrg');
+  const btnSchool = document.getElementById('orgTypeSchool');
+  if (label) label.textContent = isSchool ? '학교명' : '기관명';
+  if (deptRow) deptRow.style.display = isSchool ? 'none' : '';
+  if (orgNameInput) orgNameInput.placeholder = isSchool ? '학교명' : '기관명';
+  if (btnOrg) {
+    btnOrg.style.background = isSchool ? 'transparent' : '#3a7bd5';
+    btnOrg.style.color = isSchool ? '' : '#fff';
+  }
+  if (btnSchool) {
+    btnSchool.style.background = isSchool ? '#3a7bd5' : 'transparent';
+    btnSchool.style.color = isSchool ? '#fff' : '';
+  }
 }
 
 /** cal.sw4u.kr 기관 캘린더 URL */
@@ -240,7 +262,8 @@ async function saveSettings() {
     fontSize: state.fontSize,
     theme: state.theme,                // 🆕 v26.5.9b
     defaultTarget: state.defaultTarget, // 🆕 v26.5.9f
-    orgName: state.orgName,            // 🆕 기관 정보
+    orgType: state.orgType,            // 🆕 기관 정보
+    orgName: state.orgName,
     deptName: state.deptName,
     userName: state.userName
   });
@@ -3979,7 +4002,17 @@ document.getElementById('settingsBtn').addEventListener('click', e => {
     if (orgNameEl) orgNameEl.value = state.orgName || '';
     if (deptNameEl) deptNameEl.value = state.deptName || '';
     if (userNameEl) userNameEl.value = state.userName || '';
+    applyOrgType();
   }
+});
+
+// 🆕 기관/학교 타입 토글 버튼
+document.querySelectorAll('[data-orgtype]').forEach(btn => {
+  btn.addEventListener('click', async () => {
+    state.orgType = btn.dataset.orgtype;
+    applyOrgType();
+    await saveSettings();
+  });
 });
 
 // 🆕 기관 정보 텍스트 입력 — alwaysOnTop 우회 (설정 패널 안 텍스트 입력은 모달이 아니므로
@@ -5162,6 +5195,7 @@ if (isElectron) {
   applyFontSize();       // 폰트 크기 → CSS 변수
   applyTheme();          // 🆕 v26.5.9b 테마(light/dark) → html 클래스 + 토글 active
   applyLayout();         // 레이아웃 → 그리드 종류 결정 + renderCalendar 호출
+  applyOrgType();        // 🆕 기관/학교 타입 → 설정 패널 라벨/필드 표시 초기화
 
   // 3) 메모 렌더링 + 알람 예약
   renderMemos();
